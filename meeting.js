@@ -276,6 +276,138 @@ function resetAll(){
   }
 }
 
+// ─── Export / Save ────────────────────────────────────────────────────────────
+
+// 회의 결과 수집
+function collectResults() {
+  const area = document.getElementById('logArea');
+  const nodes = area.querySelectorAll('.topic-divider, .log-msg, .log-summary');
+  const lines = [];
+  const now = new Date().toLocaleString('ko-KR');
+
+  lines.push('╔══════════════════════════════════════════════════════════════╗');
+  lines.push('║         4DMIXX AI 전략 회의 결과 보고서                      ║');
+  lines.push('╚══════════════════════════════════════════════════════════════╝');
+  lines.push('생성일시: ' + now);
+  lines.push('참여 팀원: 기획팀(3) · 영업팀(3) · 마케팅팀(3) · 콘텐츠팀(3) = 12명');
+  lines.push('진행 주제: 6개 전략 주제 자동 회의');
+  lines.push('');
+  lines.push('━'.repeat(64));
+  lines.push('');
+
+  nodes.forEach(node => {
+    if (node.classList.contains('topic-divider')) {
+      lines.push('');
+      lines.push('▶ ' + node.textContent.replace('▶ ', ''));
+      lines.push('─'.repeat(50));
+    } else if (node.classList.contains('log-msg')) {
+      const name = node.querySelector('.log-name')?.textContent || '';
+      const role = node.querySelector('.log-role')?.textContent || '';
+      const text = node.querySelector('.log-text')?.textContent || '';
+      if (text && text !== '(응답 없음)') {
+        lines.push(`[${name} / ${role}]`);
+        lines.push(text);
+        lines.push('');
+      }
+    } else if (node.classList.contains('log-summary')) {
+      const title = node.querySelector('.ls-title')?.textContent || '';
+      const body  = node.querySelector('.ls-body')?.textContent || '';
+      lines.push('');
+      lines.push('┌─ ' + title + ' ─────────────────────────────────');
+      body.split('\n').forEach(l => lines.push('│ ' + l));
+      lines.push('└' + '─'.repeat(52));
+      lines.push('');
+    }
+  });
+
+  lines.push('');
+  lines.push('━'.repeat(64));
+  lines.push('© 4DMIXX AI 전략 회의실  |  Powered by Claude API');
+  return lines.join('\n');
+}
+
+// TXT 저장
+function saveAsTxt() {
+  const content = collectResults();
+  if (!content.includes('[')) {
+    alert('저장할 회의 결과가 없습니다.\n먼저 회의를 진행해주세요.');
+    return;
+  }
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  const now  = new Date().toISOString().slice(0,10);
+  a.href     = url;
+  a.download = `4dmixx_전략회의_${now}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// HTML 보고서 저장
+function saveAsHtml() {
+  const area = document.getElementById('logArea');
+  if (!area.querySelector('.log-msg')) {
+    alert('저장할 회의 결과가 없습니다.\n먼저 회의를 진행해주세요.');
+    return;
+  }
+  const now = new Date().toLocaleString('ko-KR');
+  let html = `<!DOCTYPE html>
+<html lang="ko"><head><meta charset="UTF-8">
+<title>4DMIXX 전략 회의 결과</title>
+<style>
+  body{font-family:-apple-system,sans-serif;background:#0f0f0f;color:#e8e8e6;max-width:860px;margin:0 auto;padding:2rem}
+  h1{font-size:20px;color:#e94560;border-bottom:2px solid #e94560;padding-bottom:10px;margin-bottom:6px}
+  .meta{font-size:12px;color:#666;margin-bottom:2rem}
+  .divider{font-size:14px;font-weight:bold;color:#00ff88;margin:2rem 0 .5rem;border-top:1px solid #1a1a3a;padding-top:1rem}
+  .msg{display:flex;gap:10px;margin-bottom:12px}
+  .av{min-width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:bold}
+  .name{font-size:12px;font-weight:bold;margin-bottom:3px}
+  .role{font-size:11px;color:#666;margin-bottom:4px}
+  .text{font-size:13px;line-height:1.7;background:#1a1a2e;border-left:3px solid;padding:8px 12px;border-radius:0 6px 6px 6px}
+  .summary{background:#0a1628;border:1px solid #e94560;border-radius:8px;padding:14px;margin:1rem 0}
+  .summary h3{color:#e94560;font-size:13px;margin-bottom:8px}
+  .summary pre{font-size:12px;line-height:1.8;white-space:pre-wrap;color:#e8e8e6}
+  .footer{text-align:center;font-size:11px;color:#444;margin-top:3rem;padding-top:1rem;border-top:1px solid #1a1a3a}
+</style></head><body>
+<h1>4DMIXX AI 전략 회의 결과 보고서</h1>
+<div class="meta">생성일시: ${now} &nbsp;|&nbsp; 참여: 12명 (기획·영업·마케팅·콘텐츠팀) &nbsp;|&nbsp; 주제: 6개</div>`;
+
+  const nodes = area.querySelectorAll('.topic-divider, .log-msg, .log-summary');
+  nodes.forEach(node => {
+    if (node.classList.contains('topic-divider')) {
+      html += `<div class="divider">${node.textContent}</div>`;
+    } else if (node.classList.contains('log-msg')) {
+      const name  = node.querySelector('.log-name')?.textContent || '';
+      const role  = node.querySelector('.log-role')?.textContent || '';
+      const text  = node.querySelector('.log-text')?.textContent || '';
+      const color = node.querySelector('.log-name')?.style?.color || '#aaa';
+      const short = node.querySelector('.log-av')?.textContent || '?';
+      const bg    = node.querySelector('.log-av')?.style?.background || '#333';
+      if (text && text !== '(응답 없음)') {
+        html += `<div class="msg">
+          <div class="av" style="background:${bg};color:${color}">${short}</div>
+          <div><div class="name" style="color:${color}">${name}</div>
+          <div class="role">${role}</div>
+          <div class="text" style="border-color:${color}55">${text}</div></div></div>`;
+      }
+    } else if (node.classList.contains('log-summary')) {
+      const body = node.querySelector('.ls-body')?.textContent || '';
+      html += `<div class="summary"><h3>✦ 주제 결론</h3><pre>${body}</pre></div>`;
+    }
+  });
+
+  html += `<div class="footer">© 4DMIXX AI 전략 회의실 &nbsp;|&nbsp; Powered by Claude API</div></body></html>`;
+
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  const date = new Date().toISOString().slice(0,10);
+  a.href     = url;
+  a.download = `4dmixx_전략회의_${date}.html`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   initOffice();
