@@ -1,0 +1,9 @@
+{
+  "name": "4dmixx-flow-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "4DMIXX Flow 자동 회의봇",
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  }
+}
