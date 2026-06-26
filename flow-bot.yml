@@ -29,7 +29,7 @@ jobs:
         run: sudo apt-get install -y fonts-nanum 2>/dev/null || true
 
       - name: Node 의존성
-        run: cd scripts && npm install
+        run: cd scripts && npm install node-fetch@3
 
       - name: Flow 봇 실행
         env:
