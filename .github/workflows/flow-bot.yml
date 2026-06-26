@@ -1,0 +1,55 @@
+name: 4DMIXX Flow 자동 회의봇
+
+on:
+  schedule:
+    # 5분마다 실행
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  flow-meeting-bot:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Node.js 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Python 의존성 설치 (PDF 생성용)
+        run: pip install reportlab
+
+      - name: 한글 폰트 설치
+        run: |
+          sudo apt-get install -y fonts-nanum 2>/dev/null || true
+          fc-cache -fv 2>/dev/null || true
+
+      - name: Node 의존성 설치
+        run: |
+          cd scripts
+          npm install node-fetch
+
+      - name: Flow 봇 실행
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FLOW_API_TOKEN: ${{ secrets.FLOW_API_TOKEN }}
+          FLOW_PROJECT_ID: ${{ secrets.FLOW_PROJECT_ID }}
+        run: node scripts/flow-meeting.mjs
+
+      - name: 상태 파일 커밋 (처리 이력 보존)
+        run: |
+          git config user.name "4DMIXX AI Bot"
+          git config user.email "bot@4dmixx.com"
+          git add scripts/.processed_posts.json 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "🤖 Flow 처리 이력 업데이트 $(date '+%Y-%m-%d %H:%M')"
+          git push 2>/dev/null || true
