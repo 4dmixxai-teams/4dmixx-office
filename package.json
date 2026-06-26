@@ -1,0 +1,12 @@
+{
+  "name": "4dmixx-office",
+  "version": "1.0.0",
+  "description": "4DMIXX AI 전략 회의 자동화",
+  "type": "module",
+  "scripts": {
+    "meeting": "node scripts/run-meeting.js"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  }
+}
