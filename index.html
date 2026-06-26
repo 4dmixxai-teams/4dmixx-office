@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>4DMIXX AI 전략 회의실</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --pixel:#1a1a2e;--pixel2:#16213e;--pixel3:#0f3460;
+  --floor:#2d4a3e;--floor2:#3a5c4f;--wall:#1e3a5f;--wall2:#2a4f7a;
+  --desk:#8b5e3c;--desk2:#a0714f;--chair:#4a3728;
+  --screen:#00ff88;--screen2:#00cc6a;
+  --accent:#e94560;--accent2:#ff6b6b;
+  --text:#e8e8e6;--text2:#aaa;--text3:#555;
+  --yellow:#ffd700;--cyan:#00ffff;--pink:#ff69b4;--green:#44ff88;
+  --bubble:#1a1a2e;--bubble-border:#00ff88;
+}
+html,body{width:100%;height:100%;background:var(--pixel);overflow:hidden;font-family:'Press Start 2P',monospace}
+
+/* ── LAYOUT ── */
+.app{display:grid;grid-template-rows:48px 1fr 180px;height:100vh;width:100vw}
+
+/* ── TOPBAR ── */
+.topbar{background:#0a0a1a;border-bottom:2px solid var(--accent);display:flex;align-items:center;padding:0 16px;gap:16px;image-rendering:pixelated}
+.logo{font-size:12px;color:var(--accent);text-shadow:0 0 8px var(--accent);letter-spacing:2px}
+.logo span{color:var(--cyan)}
+.top-badge{font-size:7px;padding:3px 8px;border:1px solid;border-radius:0}
+.top-badge.idle{border-color:var(--text3);color:var(--text3)}
+.top-badge.running{border-color:var(--yellow);color:var(--yellow);animation:glowYellow 1s infinite}
+.top-badge.done{border-color:var(--green);color:var(--green)}
+@keyframes glowYellow{0%,100%{text-shadow:0 0 4px var(--yellow)}50%{text-shadow:0 0 12px var(--yellow)}}
+.top-right{margin-left:auto;display:flex;gap:8px;align-items:center}
+.pixel-btn{font-family:'Press Start 2P',monospace;font-size:7px;padding:5px 10px;border:2px solid;cursor:pointer;background:transparent;image-rendering:pixelated;transition:all .1s}
+.pixel-btn.start{border-color:var(--accent);color:var(--accent)}
+.pixel-btn.start:not(:disabled):hover{background:var(--accent);color:#000}
+.pixel-btn.start:disabled{opacity:.35;cursor:not-allowed}
+.pixel-btn.reset{border-color:var(--text3);color:var(--text3)}
+.pixel-btn.reset:hover{background:var(--text3);color:#000}
+.api-wrap{display:flex;gap:6px;align-items:center}
+.api-input{font-family:'Press Start 2P',monospace;font-size:7px;background:#0a0a1a;border:1px solid #333;color:var(--cyan);padding:5px 8px;width:220px;outline:none}
+.api-input:focus{border-color:var(--cyan)}
+.api-save{font-family:'Press Start 2P',monospace;font-size:7px;padding:5px 8px;border:1px solid var(--cyan);color:var(--cyan);background:transparent;cursor:pointer}
+.api-save:hover{background:var(--cyan);color:#000}
+.api-ok{font-size:7px;color:var(--green)}
+
+/* ── OFFICE CANVAS ── */
+.office-wrap{position:relative;overflow:hidden;background:var(--pixel2)}
+canvas#officeCanvas{display:block;image-rendering:pixelated;image-rendering:crisp-edges}
+
+/* ── SPEECH BUBBLES overlay ── */
+#bubblesLayer{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none}
+.bubble{position:absolute;background:rgba(10,10,26,.92);border:2px solid var(--bubble-border);padding:6px 8px;font-size:7px;color:var(--text);max-width:180px;line-height:1.6;transform:translateX(-50%);animation:bubblePop .2s ease;image-rendering:pixelated}
+.bubble::after{content:'';position:absolute;bottom:-8px;left:50%;transform:translateX(-50%);border:4px solid transparent;border-top-color:var(--bubble-border)}
+.bubble .bname{color:var(--cyan);margin-bottom:3px;font-size:6px}
+.bubble.thinking{border-color:var(--yellow)}
+.bubble.thinking::after{border-top-color:var(--yellow)}
+.bubble .dots{display:inline-block;animation:dots 1s infinite}
+@keyframes bubblePop{from{transform:translateX(-50%) scale(.7);opacity:0}to{transform:translateX(-50%) scale(1);opacity:1}}
+@keyframes dots{0%{content:'...'}33%{content:'....'}66%{content:'.....'}100%{content:'...'}}
+
+/* ── CHAT LOG ── */
+.chat-log{background:#0a0a1a;border-top:2px solid #1a1a3a;display:grid;grid-template-columns:200px 1fr;overflow:hidden}
+.topic-sidebar{border-right:1px solid #1a1a3a;padding:10px;overflow-y:auto}
+.ts-title{font-size:6px;color:var(--text3);margin-bottom:8px;letter-spacing:1px}
+.topic-row{display:flex;align-items:center;gap:6px;padding:5px 6px;margin-bottom:3px;border:1px solid transparent;font-size:6px;color:var(--text3)}
+.topic-row.active{border-color:var(--yellow);color:var(--yellow)}
+.topic-row.done{border-color:var(--green);color:var(--green)}
+.topic-row .tnum{width:14px;height:14px;display:flex;align-items:center;justify-content:center;border:1px solid currentColor;font-size:5px;flex-shrink:0}
+.log-area{overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:6px}
+.log-msg{display:flex;gap:6px;align-items:flex-start;animation:fadeIn .2s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:translateY(0)}}
+.log-av{width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:5px;font-weight:bold;flex-shrink:0;image-rendering:pixelated}
+.log-body{flex:1;min-width:0}
+.log-header{display:flex;gap:6px;align-items:baseline;margin-bottom:2px}
+.log-name{font-size:6px;font-weight:bold}
+.log-role{font-size:5px;color:var(--text3)}
+.log-text{font-size:6px;color:var(--text);line-height:1.6;background:#111;padding:4px 6px;border-left:2px solid}
+.log-text.streaming::after{content:"█";animation:blink .7s infinite;font-size:5px}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+.log-summary{background:#0a1628;border:1px solid var(--accent);padding:8px;margin:4px 0}
+.log-summary .ls-title{font-size:6px;color:var(--accent);margin-bottom:4px}
+.log-summary .ls-body{font-size:6px;color:var(--text);line-height:1.8;white-space:pre-wrap}
+.topic-divider{text-align:center;font-size:6px;color:var(--accent);padding:4px;border-top:1px solid #1a1a3a;border-bottom:1px solid #1a1a3a;background:#0a0a1a}
+
+/* progress */
+.prog-bar-outer{height:2px;background:#111;position:absolute;bottom:0;left:0;right:0}
+.prog-bar-fill{height:100%;background:var(--accent);transition:width .4s;width:0%}
+
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:#0a0a1a}
+::-webkit-scrollbar-thumb{background:#333}
+</style>
+</head>
+<body>
+<div class="app">
+
+<!-- TOPBAR -->
+<div class="topbar">
+  <div class="logo">4D<span>MIXX</span> <span style="color:var(--yellow);font-size:8px">AI OFFICE</span></div>
+  <span class="top-badge idle" id="statusBadge">IDLE</span>
+  <div class="api-wrap">
+    <input type="password" id="apiKey" class="api-input" placeholder="sk-ant-api03-..." />
+    <button class="api-save" onclick="saveKey()">SAVE</button>
+    <span class="api-ok" id="apiOk"></span>
+  </div>
+  <div class="top-right">
+    <button class="pixel-btn reset" onclick="resetAll()">RESET</button>
+    <button class="pixel-btn start" id="runBtn" onclick="runAll()">▶ START MEETING</button>
+  </div>
+</div>
+
+<!-- OFFICE -->
+<div class="office-wrap" id="officeWrap">
+  <canvas id="officeCanvas"></canvas>
+  <div id="bubblesLayer"></div>
+  <div class="prog-bar-outer"><div class="prog-bar-fill" id="progFill"></div></div>
+</div>
+
+<!-- CHAT LOG -->
+<div class="chat-log">
+  <div class="topic-sidebar">
+    <div class="ts-title">TOPICS</div>
+    <div class="topic-row pending" id="ts0"><div class="tnum">1</div>원스톱 풀서비스</div>
+    <div class="topic-row pending" id="ts1"><div class="tnum">2</div>로컬 B2B</div>
+    <div class="topic-row pending" id="ts2"><div class="tnum">3</div>SNS 바이럴</div>
+    <div class="topic-row pending" id="ts3"><div class="tnum">4</div>버티컬 확장</div>
+    <div class="topic-row pending" id="ts4"><div class="tnum">5</div>견적 고도화</div>
+    <div class="topic-row pending" id="ts5"><div class="tnum">6</div>AI 프리미엄</div>
+  </div>
+  <div class="log-area" id="logArea"></div>
+</div>
+</div>
+
+<script src="office.js"></script>
+<script src="agents.js"></script>
+<script src="meeting.js"></script>
+</body>
+</html>
