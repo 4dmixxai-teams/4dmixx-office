@@ -1,7 +1,9 @@
-// ── flow-meeting.mjs ── 웹훅으로 게시글 수신 → AI 회의 → createBotPost ────────
+// ── flow-meeting.mjs ── 웹훅으로 게시글 수신 → AI 회의 → 알림+PDF ────────────
 // 트리거: Flow 웹훅 → GitHub repository_dispatch → workflow_dispatch (수동 테스트)
 
 import fetch from 'node-fetch';
+import fs from 'fs';
+import { execSync } from 'child_process';
 
 const ANTHROPIC_KEY  = process.env.ANTHROPIC_API_KEY;
 const FLOW_TOKEN     = process.env.FLOW_API_TOKEN;
@@ -9,6 +11,8 @@ const PROJECT_ID     = process.env.FLOW_PROJECT_ID    || '2916231';
 const POST_CONTENT   = process.env.FLOW_POST_CONTENT  || '';
 const POST_TITLE     = process.env.FLOW_POST_TITLE    || '회의 요청';
 const RECEIVER_ID    = process.env.FLOW_RECEIVER_ID   || '4dmixx@4dmixx.com';
+const PDF_PATH       = process.env.PDF_OUTPUT_PATH    || './meeting-report.pdf';
+const RUN_URL        = process.env.GITHUB_RUN_URL     || '';
 
 if (!ANTHROPIC_KEY) { console.error('❌ ANTHROPIC_API_KEY 없음'); process.exit(1); }
 if (!FLOW_TOKEN)    { console.error('❌ FLOW_API_TOKEN 없음');    process.exit(1); }
@@ -146,6 +150,95 @@ function parseAgendas(content) {
   return filtered.length > 0 ? filtered : [content.trim()];
 }
 
+// ─── PDF 생성 ────────────────────────────────────────────────────────────────
+function generatePdf(meetingResults, dateStr) {
+  const tmpJson = '/tmp/meeting_data.json';
+  fs.writeFileSync(tmpJson, JSON.stringify({ results: meetingResults, date: dateStr }));
+
+  const pyScript = `
+import json, base64, os
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.lib.enums import TA_CENTER
+
+font_paths = [
+  '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+  '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+  '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+]
+font = 'Helvetica'
+for fp in font_paths:
+    if os.path.exists(fp):
+        try:
+            pdfmetrics.registerFont(TTFont('KR', fp))
+            font = 'KR'
+            break
+        except: pass
+
+with open('${tmpJson}') as f:
+    data = json.load(f)
+
+out = '${PDF_PATH}'
+doc = SimpleDocTemplate(out, pagesize=A4,
+    leftMargin=20*mm, rightMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
+
+title_s = ParagraphStyle('t', fontName=font, fontSize=16, textColor=colors.HexColor('#e94560'), spaceAfter=4, alignment=TA_CENTER)
+sub_s   = ParagraphStyle('s', fontName=font, fontSize=9,  textColor=colors.HexColor('#888888'), spaceAfter=12, alignment=TA_CENTER)
+h2_s    = ParagraphStyle('h', fontName=font, fontSize=12, textColor=colors.HexColor('#00aa66'), spaceBefore=12, spaceAfter=6)
+body_s  = ParagraphStyle('b', fontName=font, fontSize=9,  textColor=colors.HexColor('#333333'), leading=14, spaceAfter=4)
+name_s  = ParagraphStyle('n', fontName=font, fontSize=9,  textColor=colors.HexColor('#185FA5'), spaceBefore=8, spaceAfter=2)
+sum_s   = ParagraphStyle('u', fontName=font, fontSize=9,  textColor=colors.HexColor('#111111'), leading=15, spaceAfter=4, leftIndent=8)
+red_s   = ParagraphStyle('r', fontName=font, fontSize=10, textColor=colors.HexColor('#e94560'), spaceBefore=4, spaceAfter=4)
+
+story = [
+    Paragraph('4DMIXX AI 전략 회의 결과', title_s),
+    Paragraph(data['date'] + ' | 기획·영업·마케팅·콘텐츠팀 | Powered by Claude API', sub_s),
+    HRFlowable(width='100%', thickness=1.5, color=colors.HexColor('#e94560')),
+    Spacer(1, 8),
+]
+for i, r in enumerate(data['results']):
+    story += [
+        Paragraph(f"[ 주제 {i+1} ] {r['agenda']}", h2_s),
+        HRFlowable(width='100%', thickness=0.5, color=colors.HexColor('#dddddd')),
+        Spacer(1, 4),
+    ]
+    for a in r['agents']:
+        story += [
+            Paragraph(f"{a['agent']['name']} — {a['agent']['role']}", name_s),
+            Paragraph(a['text'], body_s),
+        ]
+    story.append(Spacer(1, 6))
+    story.append(Paragraph('[ 결론 ]', red_s))
+    for line in r['summary'].split('\\n'):
+        if line.strip():
+            story.append(Paragraph(line.strip(), sum_s))
+    story.append(Spacer(1, 8))
+
+doc.build(story)
+print('ok')
+`;
+
+  try {
+    const escaped = pyScript.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+    const result = execSync(`python3 -c "${escaped}"`, { maxBuffer: 10*1024*1024 }).toString().trim();
+    fs.unlinkSync(tmpJson);
+    if (result === 'ok' && fs.existsSync(PDF_PATH)) {
+      console.log(`  PDF 생성 완료: ${PDF_PATH}`);
+      return true;
+    }
+    return false;
+  } catch (e) {
+    console.warn('  PDF 생성 실패:', e.message.slice(0, 200));
+    try { fs.unlinkSync(tmpJson); } catch {}
+    return false;
+  }
+}
+
 // ─── 결과 텍스트 생성 ─────────────────────────────────────────────────────────
 function buildResultText(meetingResults, dateStr) {
   let text = `4DMIXX AI 전략 회의 결과 — ${dateStr}\n`;
@@ -210,22 +303,30 @@ async function main() {
     return;
   }
 
+  // PDF 생성
+  console.log('\n  PDF 생성 중...');
+  const pdfOk = generatePdf(meetingResults, dateStr);
+
   // 결과 게시
-  const title    = `[AI 회의] ${POST_TITLE} — ${dateStr}`;
-  const contents = buildResultText(meetingResults, dateStr);
+  const title = `[AI 회의] ${POST_TITLE} — ${dateStr}`;
+  let contents = buildResultText(meetingResults, dateStr);
+  if (pdfOk && RUN_URL) {
+    contents += `\n\n[PDF 보고서 다운로드]\n${RUN_URL}`;
+  } else if (pdfOk) {
+    contents += `\n\n[PDF 보고서는 GitHub Actions 아티팩트에서 다운로드하세요]`;
+  }
 
-  console.log('\n  결과 게시 중...');
+  console.log('\n  알림 전송 중...');
 
-  // 1차 시도: createBotPost (봇이 프로젝트 참여자인 경우)
+  // 1차 시도: createBotPost
   let posted = await createBotPost(botId, title, contents);
 
   // 2차 폴백: createBotNotification
   if (!posted) {
-    console.log('  알림으로 결과 전송 중...');
     posted = await createBotNotification(botId, title, contents);
   }
 
-  console.log(`\n✅ 완료 — 안건 ${meetingResults.length}개 처리`);
+  console.log(`\n✅ 완료 — 안건 ${meetingResults.length}개 처리, PDF: ${pdfOk ? '생성됨' : '실패'}`);
 }
 
 main().catch(e => { console.error('오류:', e); process.exit(1); });

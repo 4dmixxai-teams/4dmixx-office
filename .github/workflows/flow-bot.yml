@@ -1,11 +1,8 @@
 name: 4DMIXX Flow AI 회의봇
 
 on:
-  # Flow 웹훅 → GitHub repository_dispatch
   repository_dispatch:
     types: [flow-new-post]
-
-  # 수동 테스트용
   workflow_dispatch:
     inputs:
       post_content:
@@ -15,7 +12,7 @@ on:
         description: '게시글 제목'
         default: '수동 테스트 회의'
       receiver_id:
-        description: '알림 수신자 ID (createBotPost 실패 시 폴백)'
+        description: '알림 수신자 ID'
         default: '4dmixx@4dmixx.com'
 
 jobs:
@@ -31,18 +28,37 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Python 의존성 설치
+        run: pip install reportlab
+
+      - name: 한글 폰트 설치
+        run: sudo apt-get install -y fonts-nanum 2>/dev/null || true
+
       - name: Node 의존성 설치
-        run: |
-          cd scripts
-          npm install node-fetch
+        run: cd scripts && npm install node-fetch
 
       - name: Flow AI 회의 실행
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FLOW_API_TOKEN:    ${{ secrets.FLOW_API_TOKEN }}
           FLOW_PROJECT_ID:   ${{ secrets.FLOW_PROJECT_ID }}
-          # repository_dispatch: client_payload / workflow_dispatch: inputs
           FLOW_POST_CONTENT: ${{ github.event.client_payload.content || inputs.post_content }}
           FLOW_POST_TITLE:   ${{ github.event.client_payload.title   || inputs.post_title }}
           FLOW_RECEIVER_ID:  ${{ github.event.client_payload.userId  || inputs.receiver_id || '4dmixx@4dmixx.com' }}
+          PDF_OUTPUT_PATH:   ./meeting-report.pdf
+          GITHUB_RUN_URL:    ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: node scripts/flow-meeting.mjs
+
+      - name: PDF 아티팩트 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 4DMIXX-전략회의-${{ github.run_id }}
+          path: meeting-report.pdf
+          if-no-files-found: ignore
+          retention-days: 30
