@@ -12,7 +12,7 @@ const POST_CONTENT   = process.env.FLOW_POST_CONTENT  || '';
 const POST_TITLE     = process.env.FLOW_POST_TITLE    || '회의 요청';
 const RECEIVER_ID    = process.env.FLOW_RECEIVER_ID   || '4dmixx@4dmixx.com';
 const PDF_PATH       = process.env.PDF_OUTPUT_PATH    || './meeting-report.pdf';
-const RUN_URL        = process.env.GITHUB_RUN_URL     || '';
+const RUN_URL        = process.env.ACTIONS_RUN_URL    || '';
 
 if (!ANTHROPIC_KEY) { console.error('❌ ANTHROPIC_API_KEY 없음'); process.exit(1); }
 if (!FLOW_TOKEN)    { console.error('❌ FLOW_API_TOKEN 없음');    process.exit(1); }

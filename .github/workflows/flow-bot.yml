@@ -51,8 +51,17 @@ jobs:
           FLOW_POST_TITLE:   ${{ github.event.client_payload.title   || inputs.post_title }}
           FLOW_RECEIVER_ID:  ${{ github.event.client_payload.userId  || inputs.receiver_id || '4dmixx@4dmixx.com' }}
           PDF_OUTPUT_PATH:   ./meeting-report.pdf
-          GITHUB_RUN_URL:    ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ACTIONS_RUN_URL:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: node scripts/flow-meeting.mjs
+
+      - name: PDF 생성 확인
+        if: always()
+        run: |
+          if [ -f meeting-report.pdf ]; then
+            echo "✅ PDF 생성됨: $(du -h meeting-report.pdf | cut -f1)"
+          else
+            echo "❌ PDF 없음 — 스크립트 로그 확인 필요"
+          fi
 
       - name: PDF 아티팩트 업로드
         if: always()
@@ -60,5 +69,5 @@ jobs:
         with:
           name: 4DMIXX-전략회의-${{ github.run_id }}
           path: meeting-report.pdf
-          if-no-files-found: ignore
+          if-no-files-found: warn
           retention-days: 30
