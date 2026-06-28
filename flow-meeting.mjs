@@ -33,19 +33,15 @@ function saveState(s) {
 }
 
 // ─── 웹훅 페이로드 파싱 ───────────────────────────────────────────────────────
-// Flow 웹훅 → GitHub repository_dispatch → client_payload.post 로 전달됨
+// Cloudflare Worker → GitHub repository_dispatch → client_payload: {title, content, userId}
 function parseWebhookPayload(raw) {
   const payload = typeof raw === 'string' ? JSON.parse(raw) : raw;
-  // GitHub repository_dispatch: { client_payload: { post: {...} } }
-  const post = payload.post || payload.client_payload?.post || payload;
-  return {
-    postId:      String(post.postId || post.id || post.post_id || ''),
-    title:       post.title || post.subject || '',
-    content:     (post.content || post.body || post.text || '').trim(),
-    writerName:  post.registerName || post.writerName || post.writer?.name || '',
-    writerId:    post.registerId   || post.writerId   || post.writer?.id   || '',
-    projectId:   String(post.projectId || post.project_id || PROJECT_ID),
-  };
+  const title   = payload.title   || payload.subject || '';
+  const content = (payload.content || payload.body || payload.text || '').trim();
+  const userId  = payload.userId  || payload.registerId || '';
+  // postId가 없으면 content 해시로 중복 방지
+  const postId  = payload.postId  || payload.id || `${Date.now()}_${content.slice(0,20).replace(/\s/g,'_')}`;
+  return { postId: String(postId), title, content, writerName: '', writerId: userId, projectId: PROJECT_ID };
 }
 
 // ─── stdin 읽기 ───────────────────────────────────────────────────────────────
