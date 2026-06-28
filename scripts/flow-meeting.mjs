@@ -1,27 +1,18 @@
-// ── flow-meeting.mjs ── Flow 글 감지 → AI 회의 → 댓글+PDF 업로드 ────────────
-// GitHub Actions에서 5분마다 실행됨 (cron: */5 * * * *)
+// ── flow-meeting.mjs ── 웹훅으로 게시글 수신 → AI 회의 → createBotPost ────────
+// 트리거: Flow 웹훅 → GitHub repository_dispatch → workflow_dispatch (수동 테스트)
 
 import fetch from 'node-fetch';
-import fs from 'fs';
-import path from 'path';
-import { execSync } from 'child_process';
 
-const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
-const FLOW_TOKEN    = process.env.FLOW_API_TOKEN;
-const PROJECT_ID    = process.env.FLOW_PROJECT_ID || '2916231';
-const STATE_FILE    = path.join(process.cwd(), 'scripts', '.processed_posts.json');
+const ANTHROPIC_KEY  = process.env.ANTHROPIC_API_KEY;
+const FLOW_TOKEN     = process.env.FLOW_API_TOKEN;
+const PROJECT_ID     = process.env.FLOW_PROJECT_ID    || '2916231';
+const POST_CONTENT   = process.env.FLOW_POST_CONTENT  || '';
+const POST_TITLE     = process.env.FLOW_POST_TITLE    || '회의 요청';
+const RECEIVER_ID    = process.env.FLOW_RECEIVER_ID   || '4dmixx@4dmixx.com';
 
 if (!ANTHROPIC_KEY) { console.error('❌ ANTHROPIC_API_KEY 없음'); process.exit(1); }
 if (!FLOW_TOKEN)    { console.error('❌ FLOW_API_TOKEN 없음');    process.exit(1); }
-
-// ─── 처리된 게시글 상태 관리 ─────────────────────────────────────────────────
-function loadState() {
-  try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8')); }
-  catch { return { processedPosts: {}, processedComments: {} }; }
-}
-function saveState(state) {
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-}
+if (!POST_CONTENT)  { console.error('❌ FLOW_POST_CONTENT 없음 — 웹훅 payload 필요'); process.exit(1); }
 
 // ─── Flow API ────────────────────────────────────────────────────────────────
 const FLOW_BASE = 'https://api.flow.team/v1';
@@ -42,37 +33,42 @@ async function flowRequest(method, path, body = null) {
   const text = await r.text();
 
   if (text.trim().startsWith('<')) {
-    throw new Error(`Flow API HTML 응답 (인증 실패 또는 잘못된 엔드포인트): ${method} ${url}\n${text.slice(0, 300)}`);
+    throw new Error(`Flow API HTML 응답: ${method} ${url}`);
   }
-  if (!text.trim()) return {};
+  if (!text.trim()) return { ok: r.ok, status: r.status };
 
   const data = JSON.parse(text);
-  if (!r.ok) {
-    throw new Error(`Flow API ${r.status}: ${JSON.stringify(data).slice(0, 300)}`);
+  return { ok: r.ok, status: r.status, ...data };
+}
+
+async function getBotId() {
+  const r = await flowRequest('GET', '/bots');
+  const bots = r.response?.data?.bots || r.data?.bots || [];
+  return bots[0]?.botId || null;
+}
+
+async function createBotPost(botId, title, contents) {
+  const r = await flowRequest('POST', `/bots/${botId}/posts`, {
+    projectId: PROJECT_ID,
+    title,
+    contents,
+  });
+  if (r.status === 412) {
+    console.warn('  ⚠️  봇이 프로젝트 참여자가 아님 — 알림으로 폴백');
+    return null;
   }
-  return data;
+  if (!r.ok) throw new Error(`createBotPost 실패 ${r.status}: ${JSON.stringify(r).slice(0, 200)}`);
+  return r;
 }
 
-const flowGet  = (path)       => flowRequest('GET',  path);
-const flowPost = (path, body) => flowRequest('POST', path, body);
-
-async function getRecentPosts() {
-  const r = await flowGet(`/posts/projects/${PROJECT_ID}`);
-  // 응답 구조: { data: { posts: [...] } } 또는 { response: { data: { posts: [...] } } }
-  return r.data?.posts || r.response?.data?.posts || r.posts || [];
-}
-
-async function getPostComments(postId) {
-  const r = await flowGet(`/posts/projects/${PROJECT_ID}/${postId}/comments`);
-  return r.data?.comments || r.data?.remarks || r.comments || r.remarks || [];
-}
-
-async function postComment(postId, content, pdfBase64 = null) {
-  const body = { content };
-  if (pdfBase64) {
-    body.files = [{ fileName: `4DMIXX_전략회의_${getTodayStr()}.pdf`, fileContents: pdfBase64 }];
-  }
-  return flowPost(`/posts/projects/${PROJECT_ID}/${postId}/comments`, body);
+async function createBotNotification(botId, title, contents) {
+  const r = await flowRequest('POST', `/bots/${botId}/notifications`, {
+    receiverId: RECEIVER_ID,
+    title,
+    contents,
+  });
+  if (!r.ok) throw new Error(`createBotNotification 실패 ${r.status}: ${JSON.stringify(r).slice(0, 200)}`);
+  return r;
 }
 
 // ─── Claude API ───────────────────────────────────────────────────────────────
@@ -86,7 +82,12 @@ async function callClaude(system, userMsg, maxTokens = 800) {
           'x-api-key': ANTHROPIC_KEY,
           'anthropic-version': '2023-06-01',
         },
-        body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: maxTokens, system, messages: [{ role: 'user', content: userMsg }] })
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: maxTokens,
+          system,
+          messages: [{ role: 'user', content: userMsg }],
+        })
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
@@ -130,7 +131,6 @@ async function runMeeting(agenda) {
     await sleep(300);
   }
 
-  // 결론 정리
   const summary = await callClaude(
     '4DMIXX 전략 컨설턴트. 간결하고 실행중심. 이모지금지.',
     `안건: "${agenda}"\n\n발언:\n${history.join('\n\n')}\n\n아래 형식으로 정리:\n• 핵심전략: (1~2줄)\n• 즉시 실행 액션:\n  1.\n  2.\n  3.\n• 팀별 역할:\n  - 기획팀:\n  - 영업팀:\n  - 마케팅팀:\n  - 콘텐츠팀:\n• 6개월 목표:`
@@ -139,240 +139,93 @@ async function runMeeting(agenda) {
   return { agenda, agents: results, summary };
 }
 
-// ─── 여러 안건 감지 및 회의 ───────────────────────────────────────────────────
+// ─── 안건 파싱 ───────────────────────────────────────────────────────────────
 function parseAgendas(content) {
-  // 줄바꿈으로 구분된 안건들 파싱
   const lines = content.split('\n').map(l => l.trim()).filter(l => l.length > 2);
-  // "회의해줘" 같은 명령어 제거
   const filtered = lines.filter(l => !l.match(/^(회의해줘|회의|시작|안건|주제|질문)[\s:：]?$/));
   return filtered.length > 0 ? filtered : [content.trim()];
 }
 
-// ─── PDF 생성 (Python) ────────────────────────────────────────────────────────
-function generatePdf(meetingResults, dateStr) {
-  const tmpJson = `/tmp/meeting_data_${Date.now()}.json`;
-  const tmpPdf  = `/tmp/meeting_${Date.now()}.pdf`;
-  fs.writeFileSync(tmpJson, JSON.stringify({ results: meetingResults, date: dateStr }));
-
-  const pyScript = `
-import json, sys, base64
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import mm
-from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable, Table, TableStyle
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.lib.enums import TA_LEFT, TA_CENTER
-
-# 한글 폰트 등록
-import os
-font_paths = [
-  '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
-  '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-  '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
-]
-font_registered = False
-for fp in font_paths:
-    if os.path.exists(fp):
-        try:
-            pdfmetrics.registerFont(TTFont('KR', fp))
-            font_registered = True
-            break
-        except: pass
-
-font = 'KR' if font_registered else 'Helvetica'
-
-with open('${tmpJson}') as f:
-    data = json.load(f)
-
-doc = SimpleDocTemplate('${tmpPdf}', pagesize=A4,
-    leftMargin=20*mm, rightMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
-
-styles = getSampleStyleSheet()
-title_style = ParagraphStyle('title', fontName=font, fontSize=16, textColor=colors.HexColor('#e94560'),
-    spaceAfter=4, alignment=TA_CENTER)
-sub_style   = ParagraphStyle('sub', fontName=font, fontSize=9, textColor=colors.HexColor('#888888'),
-    spaceAfter=12, alignment=TA_CENTER)
-h2_style    = ParagraphStyle('h2', fontName=font, fontSize=12, textColor=colors.HexColor('#00aa66'),
-    spaceBefore=12, spaceAfter=6)
-body_style  = ParagraphStyle('body', fontName=font, fontSize=9, textColor=colors.HexColor('#333333'),
-    leading=14, spaceAfter=4)
-name_style  = ParagraphStyle('name', fontName=font, fontSize=9, textColor=colors.HexColor('#185FA5'),
-    spaceBefore=8, spaceAfter=2)
-sum_style   = ParagraphStyle('sum', fontName=font, fontSize=9, textColor=colors.HexColor('#111111'),
-    leading=15, spaceAfter=4, leftIndent=8)
-
-story = []
-story.append(Paragraph('4DMIXX AI 전략 회의 결과', title_style))
-story.append(Paragraph(data['date'] + ' | 참여: 기획·영업·마케팅·콘텐츠팀 | Powered by Claude API', sub_style))
-story.append(HRFlowable(width='100%', thickness=1.5, color=colors.HexColor('#e94560')))
-story.append(Spacer(1, 8))
-
-for i, r in enumerate(data['results']):
-    story.append(Paragraph(f"[ 주제 {i+1} ] {r['agenda']}", h2_style))
-    story.append(HRFlowable(width='100%', thickness=0.5, color=colors.HexColor('#dddddd')))
-    story.append(Spacer(1, 4))
-
-    for ag_result in r['agents']:
-        story.append(Paragraph(f"{ag_result['agent']['name']} — {ag_result['agent']['role']}", name_style))
-        story.append(Paragraph(ag_result['text'], body_style))
-
-    story.append(Spacer(1, 6))
-    story.append(Paragraph('[ 결론 ]', ParagraphStyle('concl', fontName=font, fontSize=10,
-        textColor=colors.HexColor('#e94560'), spaceBefore=4, spaceAfter=4)))
-    for line in r['summary'].split('\\n'):
-        if line.strip():
-            story.append(Paragraph(line.strip(), sum_style))
-    story.append(Spacer(1, 8))
-
-doc.build(story)
-
-with open('${tmpPdf}', 'rb') as f:
-    print(base64.b64encode(f.read()).decode())
-`;
-
-  try {
-    const b64 = execSync(`python3 -c "${pyScript.replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`, { maxBuffer: 10*1024*1024 }).toString().trim();
-    fs.unlinkSync(tmpJson);
-    try { fs.unlinkSync(tmpPdf); } catch {}
-    return b64;
-  } catch (e) {
-    console.warn('PDF 생성 실패:', e.message);
-    fs.unlinkSync(tmpJson);
-    return null;
-  }
-}
-
-// ─── 댓글 텍스트 생성 ─────────────────────────────────────────────────────────
-function buildCommentText(meetingResults, dateStr) {
-  let text = `🤖 4DMIXX AI 전략 회의 결과 — ${dateStr}\n`;
-  text += '═'.repeat(48) + '\n\n';
+// ─── 결과 텍스트 생성 ─────────────────────────────────────────────────────────
+function buildResultText(meetingResults, dateStr) {
+  let text = `4DMIXX AI 전략 회의 결과 — ${dateStr}\n`;
+  text += '='.repeat(48) + '\n\n';
 
   meetingResults.forEach((r, i) => {
-    text += `📋 주제 ${i+1}. ${r.agenda}\n`;
-    text += '─'.repeat(40) + '\n';
+    text += `[주제 ${i+1}] ${r.agenda}\n`;
+    text += '-'.repeat(40) + '\n';
     r.agents.forEach(a => {
       text += `[${a.agent.name}/${a.agent.role}]\n${a.text}\n\n`;
     });
-    text += '✦ 결론\n' + r.summary + '\n\n';
+    text += '[결론]\n' + r.summary + '\n\n';
   });
 
-  text += '─'.repeat(48) + '\n';
-  text += '📎 상세 보고서는 첨부 PDF를 확인해주세요.\n';
-  text += '💬 추가 질문이나 새 안건은 댓글로 남겨주시면 바로 회의하겠습니다!';
+  text += '='.repeat(48) + '\n';
+  text += `원본 게시글: ${POST_TITLE}`;
   return text;
-}
-
-// ─── 추가 댓글 질문 처리 ──────────────────────────────────────────────────────
-async function handleComment(postId, commentContent, originalPostContent) {
-  console.log(`  댓글 질문 처리: ${commentContent.slice(0, 40)}...`);
-  const reply = await callClaude(
-    `당신은 4DMIXX AI 전략팀 어시스턴트입니다. ${BRIEF}\n규칙: 한국어. 이모지금지. 실용적이고 구체적으로.`,
-    `원래 안건: "${originalPostContent}"\n\n추가 질문/요청: "${commentContent}"\n\n위 질문에 대해 4DMIXX 관점에서 구체적이고 실행 가능한 답변을 해주세요. 필요하면 기획·영업·마케팅·콘텐츠팀 관점을 각각 포함해주세요.`,
-    1000
-  );
-  return reply;
 }
 
 // ─── 유틸 ─────────────────────────────────────────────────────────────────────
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-function getTodayStr() {
-  return new Date(Date.now() + 9*3600000).toISOString().slice(0,10);
-}
 function getNowStr() {
   return new Date(Date.now() + 9*3600000).toISOString().slice(0,16).replace('T',' ') + ' KST';
 }
 
 // ─── 메인 ────────────────────────────────────────────────────────────────────
 async function main() {
-  console.log(`\n🔍 Flow 프로젝트 ${PROJECT_ID} 조회 중... (${getNowStr()})`);
-  const state = loadState();
+  const dateStr = getNowStr();
+  console.log(`\n4DMIXX AI 회의봇 시작 (${dateStr})`);
+  console.log(`  게시글: "${POST_TITLE}"`);
+  console.log(`  내용 길이: ${POST_CONTENT.length}자`);
 
-  // 최근 게시글 조회
-  let posts;
-  try { posts = await getRecentPosts(); }
-  catch (e) { console.error('Flow 조회 실패:', e.message); process.exit(1); }
-
-  console.log(`  게시글 ${posts.length}개 발견`);
-
-  for (const post of posts) {
-    const postId   = post.postId || post.id;
-    const content  = (post.content || post.title || '').trim();
-    const title    = post.title || '';
-    const dateTime = post.registeredDateTime || post.createdAt || '';
-
-    if (!postId || !content) continue;
-
-    // ── 새 게시글 처리 ──────────────────────────────────────────────────────
-    if (!state.processedPosts[postId]) {
-      console.log(`\n📌 새 게시글 발견: [${postId}] ${title}`);
-      state.processedPosts[postId] = { processedAt: Date.now(), content };
-
-      // 안건 파싱 (여러 줄 = 여러 안건)
-      const agendas = parseAgendas(content);
-      console.log(`  안건 ${agendas.length}개 감지`);
-
-      // 회의 진행
-      const meetingResults = [];
-      for (const agenda of agendas) {
-        if (agenda.length < 3) continue;
-        const result = await runMeeting(agenda);
-        meetingResults.push(result);
-        await sleep(500);
-      }
-
-      if (meetingResults.length === 0) { saveState(state); continue; }
-
-      const dateStr = getNowStr();
-
-      // PDF 생성
-      console.log('  PDF 생성 중...');
-      const pdfB64 = generatePdf(meetingResults, dateStr);
-
-      // 댓글 작성
-      const commentText = buildCommentText(meetingResults, dateStr);
-      console.log('  댓글 업로드 중...');
-      await postComment(postId, commentText, pdfB64);
-      console.log(`  ✅ 게시글 [${postId}] 처리 완료`);
-
-      saveState(state);
-      await sleep(1000);
-    }
-
-    // ── 기존 게시글의 새 댓글 처리 ─────────────────────────────────────────
-    else {
-      let comments;
-      try { comments = await getPostComments(postId); }
-      catch { continue; }
-
-      const originalContent = state.processedPosts[postId].content || content;
-
-      for (const comment of (comments || [])) {
-        const commentId       = comment.COLABO_REMARK_SRNO || comment.remarkId || comment.id;
-        const commentContent  = (comment.REMARK_CNTN || comment.CNTN || comment.content || comment.text || '').trim();
-        const commentAuthorId = comment.RGSR_ID || comment.registerId || '';
-        const commentAuthor   = comment.RGSR_NM || comment.registerName || comment.author || '';
-
-        if (!commentId || !commentContent) continue;
-        // 본인(AI봇) 댓글 무시
-        if (commentAuthorId === '4dmixx@4dmixx.com' || commentContent.includes('🤖 4DMIXX AI')) continue;
-        if (state.processedComments[commentId]) continue;
-
-        console.log(`\n💬 새 댓글 발견 [${commentId}]: ${commentContent.slice(0,40)}...`);
-        state.processedComments[commentId] = { processedAt: Date.now() };
-
-        const reply = await handleComment(postId, commentContent, originalContent);
-        await postComment(postId, `💬 AI 답변\n\n${reply}\n\n─────\n추가 질문은 댓글로 남겨주세요!`);
-        console.log(`  ✅ 댓글 [${commentId}] 답변 완료`);
-
-        saveState(state);
-        await sleep(500);
-      }
-    }
+  // 봇 ID 조회
+  let botId;
+  try {
+    botId = await getBotId();
+    console.log(`  봇 ID: ${botId}`);
+  } catch (e) {
+    console.error('getBots 실패:', e.message);
+    process.exit(1);
   }
 
-  console.log(`\n✅ 완료 — 다음 실행까지 대기`);
+  if (!botId) {
+    console.error('❌ 사용 가능한 봇 없음');
+    process.exit(1);
+  }
+
+  // 안건 파싱 및 회의 진행
+  const agendas = parseAgendas(POST_CONTENT);
+  console.log(`\n  안건 ${agendas.length}개 감지`);
+
+  const meetingResults = [];
+  for (const agenda of agendas) {
+    if (agenda.length < 3) continue;
+    const result = await runMeeting(agenda);
+    meetingResults.push(result);
+    await sleep(500);
+  }
+
+  if (meetingResults.length === 0) {
+    console.log('처리할 안건 없음');
+    return;
+  }
+
+  // 결과 게시
+  const title    = `[AI 회의] ${POST_TITLE} — ${dateStr}`;
+  const contents = buildResultText(meetingResults, dateStr);
+
+  console.log('\n  결과 게시 중...');
+
+  // 1차 시도: createBotPost (봇이 프로젝트 참여자인 경우)
+  let posted = await createBotPost(botId, title, contents);
+
+  // 2차 폴백: createBotNotification
+  if (!posted) {
+    console.log('  알림으로 결과 전송 중...');
+    posted = await createBotNotification(botId, title, contents);
+  }
+
+  console.log(`\n✅ 완료 — 안건 ${meetingResults.length}개 처리`);
 }
 
-main().catch(e => { console.error('💥 오류:', e); process.exit(1); });
+main().catch(e => { console.error('오류:', e); process.exit(1); });

@@ -1,16 +1,26 @@
-name: 4DMIXX Flow 자동 회의봇
+name: 4DMIXX Flow AI 회의봇
 
 on:
-  schedule:
-    # 5분마다 실행
-    - cron: '*/5 * * * *'
+  # Flow 웹훅 → GitHub repository_dispatch
+  repository_dispatch:
+    types: [flow-new-post]
+
+  # 수동 테스트용
   workflow_dispatch:
+    inputs:
+      post_content:
+        description: '게시글 내용 (안건들, 줄바꿈으로 구분)'
+        required: true
+      post_title:
+        description: '게시글 제목'
+        default: '수동 테스트 회의'
+      receiver_id:
+        description: '알림 수신자 ID (createBotPost 실패 시 폴백)'
+        default: '4dmixx@4dmixx.com'
 
 jobs:
-  flow-meeting-bot:
+  ai-meeting:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
       - name: 저장소 체크아웃
@@ -21,35 +31,18 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Python 설정
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Python 의존성 설치 (PDF 생성용)
-        run: pip install reportlab
-
-      - name: 한글 폰트 설치
-        run: |
-          sudo apt-get install -y fonts-nanum 2>/dev/null || true
-          fc-cache -fv 2>/dev/null || true
-
       - name: Node 의존성 설치
         run: |
           cd scripts
           npm install node-fetch
 
-      - name: Flow 봇 실행
+      - name: Flow AI 회의 실행
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          FLOW_API_TOKEN: ${{ secrets.FLOW_API_TOKEN }}
-          FLOW_PROJECT_ID: ${{ secrets.FLOW_PROJECT_ID }}
+          FLOW_API_TOKEN:    ${{ secrets.FLOW_API_TOKEN }}
+          FLOW_PROJECT_ID:   ${{ secrets.FLOW_PROJECT_ID }}
+          # repository_dispatch: client_payload / workflow_dispatch: inputs
+          FLOW_POST_CONTENT: ${{ github.event.client_payload.content || inputs.post_content }}
+          FLOW_POST_TITLE:   ${{ github.event.client_payload.title   || inputs.post_title }}
+          FLOW_RECEIVER_ID:  ${{ github.event.client_payload.userId  || inputs.receiver_id || '4dmixx@4dmixx.com' }}
         run: node scripts/flow-meeting.mjs
-
-      - name: 상태 파일 커밋 (처리 이력 보존)
-        run: |
-          git config user.name "4DMIXX AI Bot"
-          git config user.email "bot@4dmixx.com"
-          git add scripts/.processed_posts.json 2>/dev/null || true
-          git diff --staged --quiet || git commit -m "🤖 Flow 처리 이력 업데이트 $(date '+%Y-%m-%d %H:%M')"
-          git push 2>/dev/null || true
