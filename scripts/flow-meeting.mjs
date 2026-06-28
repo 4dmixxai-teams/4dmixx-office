@@ -30,7 +30,7 @@ async function flowRequest(method, path, body = null) {
   const opts = {
     method,
     headers: {
-      'Authorization': `Bearer ${FLOW_TOKEN}`,
+      'x-flow-api-key': FLOW_TOKEN,
       'Content-Type': 'application/json',
       'Accept': 'application/json',
     }
@@ -356,7 +356,7 @@ async function main() {
 
         if (!commentId || !commentContent) continue;
         // 본인(AI봇) 댓글 무시
-        if (commentAuthorId === 'flow-bot01@flow.team' || commentAuthor === '4DMIXX AI' || commentContent.includes('🤖 4DMIXX AI')) continue;
+        if (commentAuthorId === '4dmixx@4dmixx.com' || commentContent.includes('🤖 4DMIXX AI')) continue;
         if (state.processedComments[commentId]) continue;
 
         console.log(`\n💬 새 댓글 발견 [${commentId}]: ${commentContent.slice(0,40)}...`);
