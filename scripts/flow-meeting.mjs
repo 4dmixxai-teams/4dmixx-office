@@ -153,10 +153,13 @@ function parseAgendas(content) {
 // ─── PDF 생성 ────────────────────────────────────────────────────────────────
 function generatePdf(meetingResults, dateStr) {
   const tmpJson = '/tmp/meeting_data.json';
+  const tmpPy   = '/tmp/generate_pdf.py';
+
   fs.writeFileSync(tmpJson, JSON.stringify({ results: meetingResults, date: dateStr }));
 
-  const pyScript = `
-import json, base64, os
+  // 파일로 저장 후 실행 (인라인 -c 이스케이프 문제 방지)
+  fs.writeFileSync(tmpPy, `
+import json, os, sys
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
@@ -166,13 +169,12 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.enums import TA_CENTER
 
-font_paths = [
-  '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
-  '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-  '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
-]
 font = 'Helvetica'
-for fp in font_paths:
+for fp in [
+    '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+]:
     if os.path.exists(fp):
         try:
             pdfmetrics.registerFont(TTFont('KR', fp))
@@ -180,11 +182,10 @@ for fp in font_paths:
             break
         except: pass
 
-with open('${tmpJson}') as f:
+with open(sys.argv[1]) as f:
     data = json.load(f)
 
-out = '${PDF_PATH}'
-doc = SimpleDocTemplate(out, pagesize=A4,
+doc = SimpleDocTemplate(sys.argv[2], pagesize=A4,
     leftMargin=20*mm, rightMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
 
 title_s = ParagraphStyle('t', fontName=font, fontSize=16, textColor=colors.HexColor('#e94560'), spaceAfter=4, alignment=TA_CENTER)
@@ -209,7 +210,7 @@ for i, r in enumerate(data['results']):
     ]
     for a in r['agents']:
         story += [
-            Paragraph(f"{a['agent']['name']} — {a['agent']['role']}", name_s),
+            Paragraph(f"{a['agent']['name']} - {a['agent']['role']}", name_s),
             Paragraph(a['text'], body_s),
         ]
     story.append(Spacer(1, 6))
@@ -221,21 +222,26 @@ for i, r in enumerate(data['results']):
 
 doc.build(story)
 print('ok')
-`;
+`);
 
   try {
-    const escaped = pyScript.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-    const result = execSync(`python3 -c "${escaped}"`, { maxBuffer: 10*1024*1024 }).toString().trim();
-    fs.unlinkSync(tmpJson);
+    const result = execSync(`python3 ${tmpPy} ${tmpJson} ${PDF_PATH}`, {
+      maxBuffer: 10 * 1024 * 1024,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).toString().trim();
+
     if (result === 'ok' && fs.existsSync(PDF_PATH)) {
       console.log(`  PDF 생성 완료: ${PDF_PATH}`);
       return true;
     }
+    console.warn('  PDF 생성 실패: 출력값 =', result);
     return false;
   } catch (e) {
-    console.warn('  PDF 생성 실패:', e.message.slice(0, 200));
-    try { fs.unlinkSync(tmpJson); } catch {}
+    console.warn('  PDF 생성 실패:', e.stderr?.toString().slice(0, 300) || e.message);
     return false;
+  } finally {
+    try { fs.unlinkSync(tmpJson); } catch {}
+    try { fs.unlinkSync(tmpPy);   } catch {}
   }
 }
 
