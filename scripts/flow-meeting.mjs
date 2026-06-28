@@ -57,13 +57,14 @@ const flowGet  = (path)       => flowRequest('GET',  path);
 const flowPost = (path, body) => flowRequest('POST', path, body);
 
 async function getRecentPosts() {
-  const r = await flowGet(`/colabo/${PROJECT_ID}/list?templateType=post&pageSize=20`);
-  return r.posts || r.result || r.items || r.data || [];
+  const r = await flowGet(`/posts/projects/${PROJECT_ID}`);
+  // 응답 구조: { data: { posts: [...] } } 또는 { response: { data: { posts: [...] } } }
+  return r.data?.posts || r.response?.data?.posts || r.posts || [];
 }
 
 async function getPostComments(postId) {
-  const r = await flowGet(`/colabo/${PROJECT_ID}/post/${postId}/remark/list`);
-  return r.remarks || r.list || r.items || r.data || [];
+  const r = await flowGet(`/posts/projects/${PROJECT_ID}/${postId}/comments`);
+  return r.data?.comments || r.data?.remarks || r.comments || r.remarks || [];
 }
 
 async function postComment(postId, content, pdfBase64 = null) {
@@ -71,7 +72,7 @@ async function postComment(postId, content, pdfBase64 = null) {
   if (pdfBase64) {
     body.files = [{ fileName: `4DMIXX_전략회의_${getTodayStr()}.pdf`, fileContents: pdfBase64 }];
   }
-  return flowPost(`/colabo/${PROJECT_ID}/post/${postId}/remark`, body);
+  return flowPost(`/posts/projects/${PROJECT_ID}/${postId}/comments`, body);
 }
 
 // ─── Claude API ───────────────────────────────────────────────────────────────
