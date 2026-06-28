@@ -24,38 +24,54 @@ function saveState(state) {
 }
 
 // ─── Flow API ────────────────────────────────────────────────────────────────
-async function flowGet(path) {
-  const r = await fetch(`https://flow.team/api${path}`, {
-    headers: { 'Authorization': `Bearer ${FLOW_TOKEN}`, 'Content-Type': 'application/json' }
-  });
-  return r.json();
+const FLOW_BASE = 'https://api.flow.team/v1';
+
+async function flowRequest(method, path, body = null) {
+  const opts = {
+    method,
+    headers: {
+      'Authorization': `Bearer ${FLOW_TOKEN}`,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    }
+  };
+  if (body) opts.body = JSON.stringify(body);
+
+  const url = `${FLOW_BASE}${path}`;
+  const r = await fetch(url, opts);
+  const text = await r.text();
+
+  if (text.trim().startsWith('<')) {
+    throw new Error(`Flow API HTML 응답 (인증 실패 또는 잘못된 엔드포인트): ${method} ${url}\n${text.slice(0, 300)}`);
+  }
+  if (!text.trim()) return {};
+
+  const data = JSON.parse(text);
+  if (!r.ok) {
+    throw new Error(`Flow API ${r.status}: ${JSON.stringify(data).slice(0, 300)}`);
+  }
+  return data;
 }
 
-async function flowPost(path, body) {
-  const r = await fetch(`https://flow.team/api${path}`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${FLOW_TOKEN}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-  return r.json();
-}
+const flowGet  = (path)       => flowRequest('GET',  path);
+const flowPost = (path, body) => flowRequest('POST', path, body);
 
 async function getRecentPosts() {
   const r = await flowGet(`/colabo/${PROJECT_ID}/list?templateType=post&pageSize=20`);
-  return r.posts || r.items || r.data || [];
+  return r.posts || r.result || r.items || r.data || [];
 }
 
 async function getPostComments(postId) {
-  const r = await flowGet(`/colabo/${PROJECT_ID}/post/${postId}/comment/list`);
-  return r.comments || r.items || r.data || [];
+  const r = await flowGet(`/colabo/${PROJECT_ID}/post/${postId}/remark/list`);
+  return r.remarks || r.list || r.items || r.data || [];
 }
 
 async function postComment(postId, content, pdfBase64 = null) {
-  const body = { projectId: PROJECT_ID, postId, content };
+  const body = { content };
   if (pdfBase64) {
     body.files = [{ fileName: `4DMIXX_전략회의_${getTodayStr()}.pdf`, fileContents: pdfBase64 }];
   }
-  return flowPost(`/colabo/${PROJECT_ID}/post/${postId}/comment`, body);
+  return flowPost(`/colabo/${PROJECT_ID}/post/${postId}/remark`, body);
 }
 
 // ─── Claude API ───────────────────────────────────────────────────────────────
@@ -332,13 +348,14 @@ async function main() {
       const originalContent = state.processedPosts[postId].content || content;
 
       for (const comment of (comments || [])) {
-        const commentId      = comment.remarkId || comment.id;
-        const commentContent = (comment.content || comment.text || '').trim();
-        const commentAuthor  = comment.registerName || comment.author || '';
+        const commentId       = comment.COLABO_REMARK_SRNO || comment.remarkId || comment.id;
+        const commentContent  = (comment.REMARK_CNTN || comment.CNTN || comment.content || comment.text || '').trim();
+        const commentAuthorId = comment.RGSR_ID || comment.registerId || '';
+        const commentAuthor   = comment.RGSR_NM || comment.registerName || comment.author || '';
 
         if (!commentId || !commentContent) continue;
         // 본인(AI봇) 댓글 무시
-        if (commentAuthor === '4DMIXX AI' || commentContent.includes('🤖 4DMIXX AI')) continue;
+        if (commentAuthorId === 'flow-bot01@flow.team' || commentAuthor === '4DMIXX AI' || commentContent.includes('🤖 4DMIXX AI')) continue;
         if (state.processedComments[commentId]) continue;
 
         console.log(`\n💬 새 댓글 발견 [${commentId}]: ${commentContent.slice(0,40)}...`);
