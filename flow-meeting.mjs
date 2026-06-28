@@ -1,7 +1,8 @@
 // ── flow-meeting.mjs ─────────────────────────────────────────────────────────
-// Claude API + Flow MCP 서버를 통해 모든 작업 처리
-// Node.js에서 직접 Flow를 호출하지 않고
-// Claude가 MCP 도구를 사용해서 Flow 읽기/쓰기를 대신 수행
+// 사용 가능한 API: getBots, createBotPost, createBotNotification, getProjects
+// 게시글 수신: Flow 웹훅 → GitHub repository_dispatch → WEBHOOK_PAYLOAD 환경변수
+// 결과 게시:  createBotPost (flow_create_post) — 댓글 대신 새 봇 게시글
+// getPosts 403 문제로 게시글 직접 조회 완전 제거
 
 import fetch from 'node-fetch';
 import fs from 'fs';
@@ -18,34 +19,54 @@ if (!ANTHROPIC_KEY)  { console.error('❌ ANTHROPIC_API_KEY 없음'); process.ex
 if (!FLOW_MCP_TOKEN) { console.error('❌ FLOW_MCP_TOKEN 없음');    process.exit(1); }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const getNowStr = () => new Date(Date.now()+9*3600000).toISOString().slice(0,16).replace('T',' ')+' KST';
+const getNowStr  = () => new Date(Date.now()+9*3600000).toISOString().slice(0,16).replace('T',' ')+' KST';
 const getTodayStr = () => new Date(Date.now()+9*3600000).toISOString().slice(0,10);
 
 function loadState() {
   try { return JSON.parse(fs.readFileSync(STATE_FILE,'utf-8')); }
-  catch { return { processedPosts:{}, processedComments:{} }; }
+  catch { return { processedPosts:{} }; }
 }
-function saveState(s) { fs.writeFileSync(STATE_FILE, JSON.stringify(s,null,2)); }
+function saveState(s) {
+  const dir = path.dirname(STATE_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive:true });
+  fs.writeFileSync(STATE_FILE, JSON.stringify(s,null,2));
+}
+
+// ─── 웹훅 페이로드 파싱 ───────────────────────────────────────────────────────
+// Flow 웹훅 → GitHub repository_dispatch → client_payload.post 로 전달됨
+function parseWebhookPayload(raw) {
+  const payload = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  // GitHub repository_dispatch: { client_payload: { post: {...} } }
+  const post = payload.post || payload.client_payload?.post || payload;
+  return {
+    postId:      String(post.postId || post.id || post.post_id || ''),
+    title:       post.title || post.subject || '',
+    content:     (post.content || post.body || post.text || '').trim(),
+    writerName:  post.registerName || post.writerName || post.writer?.name || '',
+    writerId:    post.registerId   || post.writerId   || post.writer?.id   || '',
+    projectId:   String(post.projectId || post.project_id || PROJECT_ID),
+  };
+}
+
+// ─── stdin 읽기 ───────────────────────────────────────────────────────────────
+function readStdin() {
+  return new Promise((resolve, reject) => {
+    let buf = '';
+    process.stdin.setEncoding('utf-8');
+    process.stdin.on('data', d => { buf += d; });
+    process.stdin.on('end', () => resolve(buf.trim()));
+    process.stdin.on('error', reject);
+    // stdin이 TTY면(터미널 직접 실행) 바로 빈 문자열 반환
+    if (process.stdin.isTTY) resolve('');
+  });
+}
 
 // ─── Claude + MCP 통합 호출 ───────────────────────────────────────────────────
-// Claude가 Flow MCP 도구를 사용해서 다단계 작업을 자동으로 수행
-async function claudeWithMCP(instruction, maxTokens=4000) {
+async function claudeWithMCP(instruction, maxTokens=2000) {
   const messages = [{ role:'user', content: instruction }];
   let result = '';
 
   for (let turn = 0; turn < 10; turn++) {
-    const body = {
-      model: 'claude-sonnet-4-6',
-      max_tokens: maxTokens,
-      mcp_servers: [{
-        type: 'url',
-        url: FLOW_MCP_URL,
-        name: 'flow',
-        authorization_token: FLOW_MCP_TOKEN
-      }],
-      messages
-    };
-
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -54,54 +75,47 @@ async function claudeWithMCP(instruction, maxTokens=4000) {
         'anthropic-version': '2023-06-01',
         'anthropic-beta': 'mcp-client-2025-04-04'
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: maxTokens,
+        mcp_servers: [{
+          type: 'url',
+          url: FLOW_MCP_URL,
+          name: 'flow',
+          authorization_token: FLOW_MCP_TOKEN
+        }],
+        messages
+      })
     });
 
-    if (!r.ok) {
-      const err = await r.text();
-      throw new Error(`Claude API ${r.status}: ${err.slice(0,200)}`);
-    }
+    if (!r.ok) throw new Error(`Claude API ${r.status}: ${(await r.text()).slice(0,200)}`);
 
     const d = await r.json();
-    const stopReason = d.stop_reason;
-
-    // assistant 메시지 추가
     messages.push({ role:'assistant', content: d.content });
 
-    // 텍스트 수집
     for (const block of d.content) {
       if (block.type === 'text') result += block.text;
     }
 
-    // 완료
-    if (stopReason === 'end_turn') break;
+    if (d.stop_reason === 'end_turn') break;
 
-    // tool_use → tool_result 처리
-    if (stopReason === 'tool_use') {
-      const toolResults = [];
-      for (const block of d.content) {
-        if (block.type === 'tool_use') {
-          console.log(`    🔧 ${block.name}(${JSON.stringify(block.input).slice(0,80)})`);
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: block.id,
-            content: '' // MCP 서버가 직접 처리
-          });
-        }
-      }
-      if (toolResults.length > 0) {
-        messages.push({ role:'user', content: toolResults });
-      }
+    if (d.stop_reason === 'tool_use') {
+      const toolResults = d.content
+        .filter(b => b.type === 'tool_use')
+        .map(b => {
+          console.log(`    🔧 ${b.name}(${JSON.stringify(b.input).slice(0,100)})`);
+          return { type:'tool_result', tool_use_id:b.id, content:'' };
+        });
+      if (toolResults.length) messages.push({ role:'user', content: toolResults });
     } else {
       break;
     }
     await sleep(200);
   }
-
   return result;
 }
 
-// ─── 일반 Claude 호출 (MCP 없이) ──────────────────────────────────────────────
+// ─── 일반 Claude 호출 ─────────────────────────────────────────────────────────
 async function callClaude(system, userMsg, maxTokens=800) {
   for (let i = 0; i < 3; i++) {
     try {
@@ -119,7 +133,7 @@ async function callClaude(system, userMsg, maxTokens=800) {
   }
 }
 
-// ─── 회사 브리핑 ──────────────────────────────────────────────────────────────
+// ─── 회사 브리핑 & 에이전트 ───────────────────────────────────────────────────
 const BRIEF = `4DMIXX(주식회사 포디믹스): 대전 유성구, 3D설계·3D프린팅(SLA·FDM·풀컬러)·시제품개발·후처리·금형사출양산·CNC. 원스톱 강점. 납품: 이원마린·엣지파운드리·육군·뷰티디바이스. 경쟁사: KTech·링크솔루션·아이컨택. 시장: 7040억→4.1조(CAGR19%).`;
 
 const AGENTS = [
@@ -131,7 +145,7 @@ const AGENTS = [
 
 // ─── 회의 실행 ────────────────────────────────────────────────────────────────
 async function runMeeting(agenda) {
-  console.log(`  📌 안건: ${agenda.slice(0,50)}`);
+  console.log(`  📌 안건: ${agenda.slice(0,60)}`);
   const history = [], results = [];
   for (const ag of AGENTS) {
     const prev = history.length > 0 ? `\n앞선 발언:\n${history.slice(-2).join('\n')}` : '';
@@ -196,149 +210,186 @@ doc.build(story)
 with open('${tmpPdf}','rb') as fh: print(base64.b64encode(fh.read()).decode())
 `;
   try {
-    const b64 = execSync(`python3 -c "${py.replace(/\\/g,'\\\\').replace(/"/g,'\\"').replace(/\n/g,'\\n')}"`,
-      {maxBuffer:10*1024*1024}).toString().trim();
-    try{fs.unlinkSync(tmpJson);fs.unlinkSync(tmpPdf);}catch{}
+    const b64 = execSync(
+      `python3 -c "${py.replace(/\\/g,'\\\\').replace(/"/g,'\\"').replace(/\n/g,'\\n')}"`,
+      { maxBuffer:10*1024*1024 }
+    ).toString().trim();
+    try { fs.unlinkSync(tmpJson); fs.unlinkSync(tmpPdf); } catch {}
     return b64;
   } catch(e) {
     console.warn('  ⚠️ PDF 실패:', e.message.slice(0,80));
-    try{fs.unlinkSync(tmpJson);}catch{}
+    try { fs.unlinkSync(tmpJson); } catch {}
     return null;
   }
 }
 
-// ─── 댓글 텍스트 ─────────────────────────────────────────────────────────────
-function buildComment(results, dateStr) {
-  let t = `🤖 4DMIXX AI 전략 회의 결과 — ${dateStr}\n${'═'.repeat(44)}\n\n`;
+// ─── 결과 게시글 텍스트 ───────────────────────────────────────────────────────
+function buildPostContent(results, dateStr, originalTitle, writerName) {
+  const ref = originalTitle ? `원본 안건: "${originalTitle}"` : '';
+  const by  = writerName    ? ` (작성자: ${writerName})` : '';
+  let t = `[AI 전략 회의 결과] ${ref}${by}\n생성: ${dateStr}\n${'═'.repeat(44)}\n\n`;
   results.forEach((r,i) => {
     t += `📋 주제 ${i+1}. ${r.agenda}\n${'─'.repeat(36)}\n`;
     r.agents.forEach(a => { t += `[${a.agent.name}/${a.agent.role}]\n${a.text}\n\n`; });
-    t += `✦ 결론\n${r.summary}\n\n`;
+    t += `결론\n${r.summary}\n\n`;
   });
-  t += `${'─'.repeat(44)}\n📎 상세 보고서 첨부 PDF를 확인해주세요.\n💬 추가 질문은 댓글로 남겨주시면 바로 답변합니다!`;
+  t += `${'─'.repeat(44)}\n상세 보고서는 첨부 PDF를 확인해주세요.`;
   return t;
+}
+
+// ─── createBotPost (MCP) ──────────────────────────────────────────────────────
+async function postResult({ projectId, title, content, pdfB64, todayStr }) {
+  const params = { projectId, title, content };
+  if (pdfB64) {
+    params.files = [{ fileName:`4DMIXX_전략회의_${todayStr}.pdf`, fileContents:pdfB64 }];
+  }
+  const instruction = [
+    'flow_create_post 도구를 사용해서 아래 파라미터로 게시글을 작성해줘.',
+    '다른 설명 없이 "완료" 또는 "실패"로만 답해줘.',
+    '',
+    JSON.stringify(params, null, 2)
+  ].join('\n');
+
+  console.log('  게시글 작성 중 (createBotPost)...');
+  const r = await claudeWithMCP(instruction, 1000);
+  console.log('  게시글 작성 결과:', r.slice(0,80));
+}
+
+// ─── createBotNotification (MCP) ──────────────────────────────────────────────
+async function sendNotification({ projectId, writerId, postId, message }) {
+  if (!writerId) return; // 알림 대상 없으면 스킵
+  const instruction = [
+    'flow_create_notification 도구를 사용해서 아래 파라미터로 알림을 전송해줘.',
+    '성공하면 "완료"로만 답해줘.',
+    '',
+    JSON.stringify({ projectId, targetUserId:writerId, postId, message }, null, 2)
+  ].join('\n');
+
+  try {
+    console.log('  알림 전송 중 (createBotNotification)...');
+    await claudeWithMCP(instruction, 500);
+  } catch(e) {
+    console.warn('  ⚠️ 알림 전송 실패 (선택사항):', e.message.slice(0,60));
+  }
+}
+
+// ─── 게시글 1건 처리 ─────────────────────────────────────────────────────────
+async function processPost(post, state) {
+  const { postId, title, content, writerName, writerId, projectId } = post;
+
+  if (!postId || !content) {
+    console.log('  ⚠️ postId 또는 content 없음, 스킵');
+    return;
+  }
+  if (state.processedPosts[postId]) {
+    console.log(`  이미 처리된 게시글: ${postId}`);
+    return;
+  }
+
+  console.log(`\n📌 게시글 처리: [${postId}] ${title || content.slice(0,40)}`);
+  state.processedPosts[postId] = { processedAt: Date.now(), content };
+  saveState(state);
+
+  const agendas = parseAgendas(content).filter(a => a.length >= 3);
+  if (!agendas.length) {
+    console.log('  유효한 안건 없음, 스킵');
+    return;
+  }
+  console.log(`  안건 ${agendas.length}개`);
+
+  const meetingResults = [];
+  for (const agenda of agendas) {
+    meetingResults.push(await runMeeting(agenda));
+    await sleep(500);
+  }
+
+  const dateStr   = getNowStr();
+  const todayStr  = getTodayStr();
+  const pdfB64    = generatePdf(meetingResults, dateStr);
+  const postTitle = `[AI회의] ${title || agendas[0].slice(0,30)} — ${dateStr}`;
+  const postBody  = buildPostContent(meetingResults, dateStr, title, writerName);
+
+  await postResult({ projectId: projectId || PROJECT_ID, title: postTitle, content: postBody, pdfB64, todayStr });
+
+  await sendNotification({
+    projectId: projectId || PROJECT_ID,
+    writerId,
+    postId,
+    message: `"${title || agendas[0].slice(0,20)}" 안건의 AI 전략 회의 결과가 게시되었습니다.`
+  });
+
+  console.log(`  ✅ [${postId}] 처리 완료`);
 }
 
 // ─── 메인 ────────────────────────────────────────────────────────────────────
 async function main() {
-  console.log(`\n🔍 Flow 프로젝트 ${PROJECT_ID} 조회 중... (${getNowStr()})`);
+  const args = process.argv.slice(2);
   const state = loadState();
 
-  // Claude + MCP로 게시글 목록 조회
-  console.log('  Claude MCP로 게시글 조회 중...');
-  let postsJson;
-  try {
-    postsJson = await claudeWithMCP(
-      `flow_list_project_items 도구를 사용해서 projectId="${PROJECT_ID}", templateType="post", pageSize="20" 로 조회하고, 결과를 JSON 형식으로만 출력해줘. 다른 설명 없이 JSON만.`,
-      2000
-    );
-  } catch(e) {
-    console.error('Flow 조회 실패:', e.message);
-    process.exit(1);
+  // ── 모드 1: 환경변수로 웹훅 페이로드 수신 (GitHub repository_dispatch 경유) ──
+  if (process.env.WEBHOOK_PAYLOAD) {
+    console.log(`\n🔔 웹훅 페이로드 수신 (환경변수) — ${getNowStr()}`);
+    try {
+      const post = parseWebhookPayload(process.env.WEBHOOK_PAYLOAD);
+      await processPost(post, state);
+    } catch(e) {
+      console.error('❌ 페이로드 파싱 실패:', e.message);
+      process.exit(1);
+    }
+    console.log(`\n✅ 완료 (${getNowStr()})`);
+    return;
   }
 
-  let posts = [];
-  try {
-    const match = postsJson.match(/\{[\s\S]*\}/);
-    if (match) {
-      const parsed = JSON.parse(match[0]);
-      posts = parsed.posts || parsed.items || parsed.data || [];
+  // ── 모드 2: stdin으로 웹훅 페이로드 수신 ──────────────────────────────────
+  if (args.includes('--webhook')) {
+    console.log(`\n🔔 웹훅 페이로드 수신 (stdin) — ${getNowStr()}`);
+    const raw = await readStdin();
+    if (!raw) { console.error('❌ stdin이 비어있음'); process.exit(1); }
+    try {
+      const post = parseWebhookPayload(raw);
+      await processPost(post, state);
+    } catch(e) {
+      console.error('❌ 페이로드 파싱 실패:', e.message);
+      process.exit(1);
     }
-  } catch { console.log('  게시글 파싱 실패, 종료'); process.exit(0); }
-
-  console.log(`  게시글 ${posts.length}개 발견`);
-
-  for (const post of posts) {
-    const postId  = post.postId || post.id;
-    const content = (post.content || '').trim();
-    const title   = post.title || '';
-    if (!postId || !content) continue;
-
-    // ── 새 게시글 처리 ─────────────────────────────────────────────────────
-    if (!state.processedPosts[postId]) {
-      console.log(`\n📌 새 게시글: [${postId}] ${title}`);
-      state.processedPosts[postId] = { processedAt:Date.now(), content };
-
-      const agendas = parseAgendas(content);
-      console.log(`  안건 ${agendas.length}개`);
-
-      const meetingResults = [];
-      for (const agenda of agendas) {
-        if (agenda.length < 3) continue;
-        meetingResults.push(await runMeeting(agenda));
-        await sleep(500);
-      }
-      if (!meetingResults.length) { saveState(state); continue; }
-
-      const dateStr = getNowStr();
-      console.log('  PDF 생성 중...');
-      const pdfB64 = generatePdf(meetingResults, dateStr);
-
-      // Claude MCP로 댓글 작성
-      console.log('  댓글 작성 중...');
-      const commentText = buildComment(meetingResults, dateStr);
-      const commentParams = { projectId:PROJECT_ID, postId, content:commentText };
-      if (pdfB64) {
-        commentParams.files = [{ fileName:`4DMIXX_전략회의_${getTodayStr()}.pdf`, fileContents:pdfB64 }];
-      }
-
-      await claudeWithMCP(
-        `flow_create_comment 도구를 사용해서 다음 파라미터로 댓글을 작성해줘:\n${JSON.stringify(commentParams, null, 2)}\n\n성공하면 "완료"라고만 답해줘.`,
-        1000
-      );
-      console.log(`  ✅ 게시글 [${postId}] 처리 완료`);
-      saveState(state);
-      await sleep(1000);
-    }
-
-    // ── 기존 게시글 새 댓글 처리 ──────────────────────────────────────────
-    else {
-      const originalContent = state.processedPosts[postId].content || content;
-      let commentsJson;
-      try {
-        commentsJson = await claudeWithMCP(
-          `flow_list_project_items 도구로 projectId="${PROJECT_ID}", templateType="post", postId="${postId}" 조회 후 JSON만 출력.`,
-          1000
-        );
-      } catch { continue; }
-
-      let comments = [];
-      try {
-        const m = commentsJson.match(/\{[\s\S]*\}/);
-        if (m) {
-          const p = JSON.parse(m[0]);
-          comments = p.comments || p.posts || p.items || [];
-        }
-      } catch {}
-
-      for (const c of comments) {
-        const cId      = c.remarkId || c.id;
-        const cContent = (c.content || c.text || '').trim();
-        const cAuthor  = c.registerName || '';
-        if (!cId || !cContent) continue;
-        if (cAuthor.includes('AI') || cContent.includes('🤖')) continue;
-        if (state.processedComments[cId]) continue;
-
-        console.log(`\n💬 새 댓글 [${cId}]: ${cContent.slice(0,40)}`);
-        state.processedComments[cId] = { processedAt:Date.now() };
-
-        const reply = await callClaude(
-          `당신은 4DMIXX AI 전략팀. ${BRIEF} 한국어. 이모지금지. 실용적이고 구체적으로.`,
-          `원래 안건: "${originalContent}"\n추가 질문: "${cContent}"\n기획·영업·마케팅·콘텐츠 팀 관점 포함해 구체적으로 답변.`,
-          1000
-        );
-
-        await claudeWithMCP(
-          `flow_create_comment 도구로 projectId="${PROJECT_ID}", postId="${postId}", content="${`💬 AI 답변\n\n${reply}\n\n─\n추가 질문은 댓글로 남겨주세요!`.replace(/"/g,"'")}" 댓글 작성. 완료라고만 답해.`,
-          500
-        );
-        console.log(`  ✅ 댓글 답변 완료`);
-        saveState(state);
-        await sleep(500);
-      }
-    }
+    console.log(`\n✅ 완료 (${getNowStr()})`);
+    return;
   }
-  console.log(`\n✅ 완료 (${getNowStr()})`);
+
+  // ── 모드 3: 직접 실행 (테스트용) ──────────────────────────────────────────
+  // node flow-meeting.mjs --content "안건1\n안건2" [--title "제목"] [--post-id "123"]
+  const contentIdx = args.indexOf('--content');
+  if (contentIdx >= 0) {
+    const content  = args[contentIdx + 1] || '';
+    const titleIdx = args.indexOf('--title');
+    const title    = titleIdx >= 0 ? args[titleIdx + 1] : '';
+    const pidIdx   = args.indexOf('--post-id');
+    const postId   = pidIdx >= 0 ? args[pidIdx + 1] : `test_${Date.now()}`;
+    console.log(`\n🧪 테스트 모드 — ${getNowStr()}`);
+    await processPost({ postId, title, content, writerName:'', writerId:'', projectId:PROJECT_ID }, state);
+    console.log(`\n✅ 완료 (${getNowStr()})`);
+    return;
+  }
+
+  // ── 사용법 안내 ────────────────────────────────────────────────────────────
+  console.log(`
+flow-meeting.mjs — 사용법
+
+  웹훅 (환경변수):
+    WEBHOOK_PAYLOAD='{"postId":"123","content":"..."}' node flow-meeting.mjs
+
+  웹훅 (stdin):
+    echo '{"postId":"123","content":"..."}' | node flow-meeting.mjs --webhook
+
+  GitHub repository_dispatch 페이로드:
+    {"client_payload":{"post":{"postId":"123","title":"...","content":"...","registerName":"홍길동","registerId":"user_id"}}}
+
+  테스트:
+    node flow-meeting.mjs --content "전략 안건1\\n전략 안건2" --title "주간 전략 회의"
+
+  필수 환경변수:
+    ANTHROPIC_API_KEY, FLOW_MCP_TOKEN, FLOW_PROJECT_ID
+`);
 }
 
 main().catch(e => { console.error('💥', e.message); process.exit(1); });
