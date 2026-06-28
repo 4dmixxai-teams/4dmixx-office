@@ -1,73 +1,67 @@
-name: 4DMIXX Flow AI 회의봇
+name: 4DMIXX Flow 자동 회의봇
 
 on:
+  # Flow 웹훅 → GitHub repository_dispatch 로 트리거
+  # Flow 웹훅 설정: POST https://api.github.com/repos/4dmixxai-teams/4dmixx-office/dispatches
+  # Body: { "event_type": "flow-post", "client_payload": { "post": { ...Flow post data... } } }
   repository_dispatch:
-    types: [flow-new-post]
+    types: [flow-post]
+
+  # 수동 실행 (테스트용)
   workflow_dispatch:
     inputs:
-      post_content:
-        description: '게시글 내용 (안건들, 줄바꿈으로 구분)'
-        required: true
-      post_title:
-        description: '게시글 제목'
-        default: '수동 테스트 회의'
-      receiver_id:
-        description: '알림 수신자 ID'
-        default: '4dmixx@4dmixx.com'
+      post_payload:
+        description: '게시글 JSON ({"postId":"...","title":"...","content":"..."})'
+        required: false
+        default: ''
 
 jobs:
-  ai-meeting:
+  flow-meeting-bot:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
-      - name: 저장소 체크아웃
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Node.js 설정
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Python 설정
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Python 의존성 설치
+      - name: Python 의존성 (PDF)
         run: pip install reportlab
 
-      - name: 한글 폰트 설치
+      - name: 한글 폰트
         run: sudo apt-get install -y fonts-nanum 2>/dev/null || true
 
-      - name: Node 의존성 설치
-        run: cd scripts && npm install node-fetch
+      - name: Node 의존성
+        run: npm install node-fetch@3
 
-      - name: Flow AI 회의 실행
+      - name: Flow 봇 실행 (웹훅)
+        if: github.event_name == 'repository_dispatch'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          FLOW_API_TOKEN:    ${{ secrets.FLOW_API_TOKEN }}
-          FLOW_PROJECT_ID:   ${{ secrets.FLOW_PROJECT_ID }}
-          FLOW_POST_CONTENT: ${{ github.event.client_payload.content || inputs.post_content }}
-          FLOW_POST_TITLE:   ${{ github.event.client_payload.title   || inputs.post_title }}
-          FLOW_RECEIVER_ID:  ${{ github.event.client_payload.userId  || inputs.receiver_id || '4dmixx@4dmixx.com' }}
-          PDF_OUTPUT_PATH:   ./meeting-report.pdf
-          ACTIONS_RUN_URL:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: node scripts/flow-meeting.mjs
+          FLOW_MCP_TOKEN: ${{ secrets.FLOW_MCP_TOKEN }}
+          FLOW_PROJECT_ID: ${{ secrets.FLOW_PROJECT_ID }}
+          WEBHOOK_PAYLOAD: ${{ toJson(github.event.client_payload) }}
+        run: node flow-meeting.mjs
 
-      - name: PDF 생성 확인
-        if: always()
+      - name: Flow 봇 실행 (수동 테스트)
+        if: github.event_name == 'workflow_dispatch' && inputs.post_payload != ''
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FLOW_MCP_TOKEN: ${{ secrets.FLOW_MCP_TOKEN }}
+          FLOW_PROJECT_ID: ${{ secrets.FLOW_PROJECT_ID }}
+          WEBHOOK_PAYLOAD: ${{ inputs.post_payload }}
+        run: node flow-meeting.mjs
+
+      - name: 처리 이력 커밋
         run: |
-          if [ -f meeting-report.pdf ]; then
-            echo "✅ PDF 생성됨: $(du -h meeting-report.pdf | cut -f1)"
-          else
-            echo "❌ PDF 없음 — 스크립트 로그 확인 필요"
-          fi
-
-      - name: PDF 아티팩트 업로드
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: 4DMIXX-전략회의-${{ github.run_id }}
-          path: meeting-report.pdf
-          if-no-files-found: warn
-          retention-days: 30
+          git config user.name "4DMIXX AI Bot"
+          git config user.email "bot@4dmixx.com"
+          git add scripts/.processed_posts.json 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "🤖 처리이력 $(date '+%Y-%m-%d %H:%M')" && git push || true
