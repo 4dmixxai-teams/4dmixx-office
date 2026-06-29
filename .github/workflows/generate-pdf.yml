@@ -14,13 +14,10 @@ jobs:
       - name: 저장소 체크아웃
         uses: actions/checkout@v4
 
-      - name: Python 설정
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: fpdf2 설치
-        run: pip install fpdf2
+      - name: 한글 폰트 및 weasyprint 설치
+        run: |
+          sudo apt-get install -y fonts-nanum python3-pip
+          pip install weasyprint
 
       - name: PDF 생성
         env:
@@ -30,24 +27,41 @@ jobs:
         run: |
           python3 << 'PYEOF'
           import os
-          from fpdf import FPDF
+          from weasyprint import HTML
 
           title = os.environ.get("MEETING_TITLE", "AI 회의 결과")
           content = os.environ.get("MEETING_CONTENT", "")
           filename = os.environ.get("PDF_FILENAME", "meeting.pdf")
 
-          pdf = FPDF()
-          pdf.add_page()
-          pdf.set_auto_page_break(auto=True, margin=15)
-          pdf.add_font("DejaVu", "", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
-          pdf.set_font("DejaVu", size=16)
-          pdf.multi_cell(0, 10, title)
-          pdf.ln(5)
-          pdf.set_font("DejaVu", size=10)
-          pdf.multi_cell(0, 7, content)
+          # 마크다운 간단 변환
+          def md_to_html(text):
+              import re
+              text = re.sub(r'^## (.+)$', r'<h2>\1</h2>', text, flags=re.MULTILINE)
+              text = re.sub(r'^# (.+)$', r'<h1>\1</h1>', text, flags=re.MULTILINE)
+              text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+              text = re.sub(r'^- (.+)$', r'<li>\1</li>', text, flags=re.MULTILINE)
+              text = text.replace('\n', '<br>')
+              return text
+
+          html = f"""<!DOCTYPE html>
+          <html><head><meta charset="utf-8">
+          <style>
+            @font-face {{
+              font-family: 'NanumGothic';
+              src: url('/usr/share/fonts/truetype/nanum/NanumGothic.ttf');
+            }}
+            body {{ font-family: 'NanumGothic', sans-serif; margin: 40px; line-height: 1.8; }}
+            h1 {{ font-size: 20px; border-bottom: 2px solid #333; padding-bottom: 8px; }}
+            h2 {{ font-size: 16px; color: #444; margin-top: 20px; }}
+            strong {{ font-weight: bold; }}
+          </style>
+          </head><body>
+          <h1>{title}</h1>
+          {md_to_html(content)}
+          </body></html>"""
 
           os.makedirs("pdfs", exist_ok=True)
-          pdf.output(f"pdfs/{filename}")
+          HTML(string=html).write_pdf(f"pdfs/{filename}")
           print(f"PDF 생성 완료: pdfs/{filename}")
           PYEOF
 
