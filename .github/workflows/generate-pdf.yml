@@ -1,0 +1,36 @@
+name: 회의 결과 PDF 생성
+
+on:
+  repository_dispatch:
+    types: [meeting-complete]
+
+jobs:
+  generate-pdf:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Pandoc 및 한글 폰트 설치
+        run: sudo apt-get install -y pandoc texlive-xetex fonts-noto-cjk
+
+      - name: 회의 결과 마크다운 저장
+        run: |
+          mkdir -p meeting-results
+          cat > meeting-results/meeting.md << MDEOF
+${{ github.event.client_payload.content }}
+MDEOF
+
+      - name: PDF 생성
+        run: |
+          FILENAME="meeting-$(date +%Y%m%d-%H%M%S).pdf"
+          pandoc meeting-results/meeting.md             -o "meeting-results/${FILENAME}"             --pdf-engine=xelatex             -V mainfont="Noto Sans CJK KR"             -V geometry:margin=2cm
+          echo "PDF_FILE=${FILENAME}" >> $GITHUB_ENV
+
+      - name: PDF 아티팩트 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.client_payload.title }}
+          path: meeting-results/*.pdf
+          retention-days: 90
