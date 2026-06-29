@@ -9,28 +9,47 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 저장소 체크아웃
-        uses: actions/checkout@v4
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-      - name: Pandoc 및 한글 폰트 설치
-        run: sudo apt-get install -y pandoc texlive-xetex fonts-noto-cjk
-
-      - name: 회의 결과 마크다운 저장
-        run: |
-          mkdir -p meeting-results
-          cat > meeting-results/meeting.md << MDEOF
-${{ github.event.client_payload.content }}
-MDEOF
+      - name: fpdf2 설치
+        run: pip install fpdf2
 
       - name: PDF 생성
+        env:
+          MEETING_TITLE: ${{ github.event.client_payload.title }}
+          MEETING_CONTENT: ${{ github.event.client_payload.content }}
         run: |
-          FILENAME="meeting-$(date +%Y%m%d-%H%M%S).pdf"
-          pandoc meeting-results/meeting.md             -o "meeting-results/${FILENAME}"             --pdf-engine=xelatex             -V mainfont="Noto Sans CJK KR"             -V geometry:margin=2cm
-          echo "PDF_FILE=${FILENAME}" >> $GITHUB_ENV
+          python3 - << '"PYEOF"'
+          import os
+          from fpdf import FPDF
+
+          title = os.environ.get("MEETING_TITLE", "AI 회의 결과")
+          content = os.environ.get("MEETING_CONTENT", "")
+
+          pdf = FPDF()
+          pdf.add_page()
+          pdf.set_auto_page_break(auto=True, margin=15)
+
+          # 유니코드 폰트 (fpdf2 내장)
+          pdf.add_font("DejaVu", "", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+          pdf.set_font("DejaVu", size=16)
+          pdf.multi_cell(0, 10, title)
+          pdf.ln(5)
+          pdf.set_font("DejaVu", size=10)
+          pdf.multi_cell(0, 7, content)
+
+          import datetime
+          filename = f"meeting-{datetime.datetime.now().strftime(\'%Y%m%d-%H%M%S\')}.pdf"
+          pdf.output(filename)
+          print(f"PDF 생성 완료: {filename}")
+          PYEOF
 
       - name: PDF 아티팩트 업로드
         uses: actions/upload-artifact@v4
         with:
           name: ${{ github.event.client_payload.title }}
-          path: meeting-results/*.pdf
+          path: "*.pdf"
           retention-days: 90
