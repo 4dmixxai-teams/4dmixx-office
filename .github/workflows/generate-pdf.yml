@@ -1,0 +1,60 @@
+name: 회의 결과 PDF 생성
+
+on:
+  repository_dispatch:
+    types: [meeting-complete]
+
+jobs:
+  generate-pdf:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: fpdf2 설치
+        run: pip install fpdf2
+
+      - name: PDF 생성
+        env:
+          MEETING_TITLE: ${{ github.event.client_payload.title }}
+          MEETING_CONTENT: ${{ github.event.client_payload.content }}
+          PDF_FILENAME: ${{ github.event.client_payload.filename }}
+        run: |
+          python3 << 'PYEOF'
+          import os
+          from fpdf import FPDF
+
+          title = os.environ.get("MEETING_TITLE", "AI 회의 결과")
+          content = os.environ.get("MEETING_CONTENT", "")
+          filename = os.environ.get("PDF_FILENAME", "meeting.pdf")
+
+          pdf = FPDF()
+          pdf.add_page()
+          pdf.set_auto_page_break(auto=True, margin=15)
+          pdf.add_font("DejaVu", "", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+          pdf.set_font("DejaVu", size=16)
+          pdf.multi_cell(0, 10, title)
+          pdf.ln(5)
+          pdf.set_font("DejaVu", size=10)
+          pdf.multi_cell(0, 7, content)
+
+          os.makedirs("pdfs", exist_ok=True)
+          pdf.output(f"pdfs/{filename}")
+          print(f"PDF 생성 완료: pdfs/{filename}")
+          PYEOF
+
+      - name: PDF 커밋 및 푸시
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pdfs/
+          git commit -m "Add meeting PDF: ${{ github.event.client_payload.filename }}"
+          git push
