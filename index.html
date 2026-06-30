@@ -95,6 +95,50 @@ canvas#officeCanvas{display:block;image-rendering:pixelated;image-rendering:cris
 ::-webkit-scrollbar{width:4px;height:4px}
 ::-webkit-scrollbar-track{background:#0a0a1a}
 ::-webkit-scrollbar-thumb{background:#333}
+
+/* ── MOBILE SYNC MODAL ── */
+#mobileModal{position:fixed;inset:0;background:rgba(0,0,0,.92);display:none;z-index:9999;align-items:center;justify-content:center}
+#mobileModal.open{display:flex}
+.mm-inner{background:#0a0a1a;border:2px solid var(--cyan);padding:22px;width:300px;text-align:center}
+.mm-title{font-size:9px;color:var(--cyan);margin-bottom:6px;letter-spacing:2px}
+.mm-hint{font-size:5px;color:var(--text3);margin-bottom:14px;line-height:1.8}
+.mm-qr{margin:0 auto 12px;width:180px;height:180px;background:#fff;display:flex;align-items:center;justify-content:center}
+.mm-qr img{width:180px;height:180px;display:block}
+.mm-url{font-size:5px;color:var(--text2);word-break:break-all;margin-bottom:12px;padding:6px;background:#111;border:1px solid #333;text-align:left;cursor:text;user-select:all;line-height:1.6}
+.mm-btns{display:flex;flex-direction:column;gap:6px}
+.mm-btn{font-family:'Press Start 2P',monospace;font-size:6px;padding:7px;border:1px solid;cursor:pointer;background:transparent}
+.mm-btn.b-copy{border-color:var(--cyan);color:var(--cyan)}
+.mm-btn.b-copy:hover{background:var(--cyan);color:#000}
+.mm-btn.b-state{border-color:var(--yellow);color:var(--yellow)}
+.mm-btn.b-state:hover{background:var(--yellow);color:#000}
+.mm-btn.b-watch{border-color:var(--green);color:var(--green)}
+.mm-btn.b-watch:hover{background:var(--green);color:#000}
+.mm-btn.b-close{border-color:var(--text3);color:var(--text3)}
+.mm-btn.b-close:hover{background:var(--text3);color:#000}
+.mm-status{font-size:5px;color:var(--green);margin-top:8px;min-height:12px}
+
+/* ── WATCH MODE ── */
+body.watch-mode .app{grid-template-rows:44px 0 1fr}
+body.watch-mode .office-wrap{display:none}
+body.watch-mode .chat-log{grid-template-columns:1fr;height:calc(100vh - 44px)}
+body.watch-mode .api-wrap{display:none}
+body.watch-mode #runBtn{display:none}
+body.watch-mode .pixel-btn.reset{display:none}
+body.watch-mode .pixel-btn.save-txt{display:none}
+body.watch-mode .pixel-btn.save-html{display:none}
+
+/* ── MOBILE RESPONSIVE ── */
+@media(max-width:600px){
+  .app{grid-template-rows:44px 0 1fr}
+  .office-wrap{display:none}
+  .chat-log{grid-template-columns:1fr}
+  .topic-sidebar{display:none}
+  .topbar{padding:0 8px;gap:8px}
+  .logo{font-size:9px}
+  .api-wrap{display:none}
+  .top-badge{display:none}
+  .pixel-btn{font-size:6px;padding:4px 7px}
+}
 </style>
 </head>
 <body>
@@ -112,6 +156,7 @@ canvas#officeCanvas{display:block;image-rendering:pixelated;image-rendering:cris
   <div class="top-right">
     <button class="pixel-btn save-txt" onclick="saveAsTxt()" title="TXT로 저장">💾 TXT</button>
     <button class="pixel-btn save-html" onclick="saveAsHtml()" title="HTML 보고서로 저장">📄 HTML</button>
+    <button class="pixel-btn" style="border-color:var(--cyan);color:var(--cyan)" onclick="showMobileSync()" title="모바일 동기화">📱 SYNC</button>
     <button class="pixel-btn reset" onclick="resetAll()">RESET</button>
     <button class="pixel-btn start" id="runBtn" onclick="runAll()">▶ START MEETING</button>
   </div>
@@ -137,6 +182,23 @@ canvas#officeCanvas{display:block;image-rendering:pixelated;image-rendering:cris
   </div>
   <div class="log-area" id="logArea"></div>
 </div>
+</div>
+
+<!-- MOBILE SYNC MODAL -->
+<div id="mobileModal">
+  <div class="mm-inner">
+    <div class="mm-title">📱 모바일 동기화</div>
+    <div class="mm-hint">QR코드 스캔 또는 URL 복사로 모바일 접속</div>
+    <div class="mm-qr"><img id="mmQrImg" src="" alt="QR" onerror="this.style.display='none';this.parentNode.innerHTML='<span style=color:#555;font-size:6px>QR 로드 실패<br>URL 직접 복사</span>'" /></div>
+    <div class="mm-url" id="mmUrl"></div>
+    <div class="mm-btns">
+      <button class="mm-btn b-copy" onclick="copyMobileUrl()">URL 복사</button>
+      <button class="mm-btn b-state" onclick="exportAndShowState()">현재 진행 상태 포함 URL</button>
+      <button class="mm-btn b-watch" onclick="openWatchTab()">이 기기에서 감시 탭 열기</button>
+      <button class="mm-btn b-close" onclick="closeMobileModal()">닫기 (ESC)</button>
+    </div>
+    <div class="mm-status" id="mmStatus"></div>
+  </div>
 </div>
 
 <script src="office.js"></script>

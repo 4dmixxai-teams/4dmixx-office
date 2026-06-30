@@ -9,9 +9,36 @@ const LS_TOPICS = '4dmixx_topic_status';
 const LS_APIKEY = '4dmixx_apikey';
 const LS_PROG   = '4dmixx_progress';
 
+// ─── BroadcastChannel (같은 기기 탭 간 실시간 동기화) ────────────────────────
+const _bc = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('4dmixx_sync') : null;
+
+function broadcastState() {
+  if (!_bc) return;
+  const topics = [];
+  for (let i = 0; i < 6; i++) {
+    const el = document.getElementById('ts' + i);
+    topics.push(el ? (el.classList[1] || 'pending') : 'pending');
+  }
+  const prog = parseFloat(document.getElementById('progFill').style.width) || 0;
+  const log = document.getElementById('logArea').innerHTML;
+  _bc.postMessage({ type: 'sync', topics, prog, log });
+}
+
+if (_bc) {
+  _bc.onmessage = (e) => {
+    if (e.data.type !== 'sync' || !document.body.classList.contains('watch-mode') || _running) return;
+    e.data.topics.forEach((s, i) => setTopicStatus(i, s));
+    setProgress(e.data.prog);
+    const logArea = document.getElementById('logArea');
+    logArea.innerHTML = e.data.log;
+    logArea.scrollTop = logArea.scrollHeight;
+  };
+}
+
 // ─── 로그 자동저장 ────────────────────────────────────────────────────────────
 function persistLog(){
   try { localStorage.setItem(LS_LOG, document.getElementById('logArea').innerHTML); } catch(e){}
+  broadcastState();
 }
 function persistTopics(){
   try {
@@ -22,8 +49,19 @@ function persistTopics(){
     }
     localStorage.setItem(LS_TOPICS, JSON.stringify(s));
   } catch(e){}
+  broadcastState();
 }
 function restoreSession(){
+  // URL 해시 상태 복원 (모바일 동기화 상태 공유 URL)
+  if (location.hash.startsWith('#s=')) {
+    try {
+      const state = JSON.parse(atob(location.hash.slice(3)));
+      if (state.topics) state.topics.forEach((s, i) => setTopicStatus(i, s));
+      if (state.prog !== undefined) setProgress(state.prog);
+      history.replaceState(null, '', location.pathname + location.search);
+    } catch(e) {}
+  }
+
   try {
     // API 키 복원
     const k = localStorage.getItem(LS_APIKEY);
@@ -410,8 +448,66 @@ h1{font-size:20px;color:#e94560;border-bottom:2px solid #e94560;padding-bottom:1
   a.click(); URL.revokeObjectURL(url);
 }
 
+// ─── Mobile Sync ─────────────────────────────────────────────────────────────
+function showMobileSync() {
+  const base = location.origin + location.pathname;
+  document.getElementById('mmUrl').textContent = base;
+  document.getElementById('mmQrImg').src =
+    'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(base);
+  document.getElementById('mmStatus').textContent = '';
+  document.getElementById('mobileModal').classList.add('open');
+}
+
+function closeMobileModal() {
+  document.getElementById('mobileModal').classList.remove('open');
+}
+
+function copyMobileUrl() {
+  const url = document.getElementById('mmUrl').textContent;
+  navigator.clipboard.writeText(url).then(() => {
+    document.getElementById('mmStatus').textContent = '✓ 클립보드에 복사됨';
+    setTimeout(() => { document.getElementById('mmStatus').textContent = ''; }, 2500);
+  }).catch(() => {
+    document.getElementById('mmStatus').textContent = 'URL을 선택 후 수동으로 복사하세요';
+  });
+}
+
+function exportAndShowState() {
+  const topics = [];
+  for (let i = 0; i < 6; i++) {
+    const el = document.getElementById('ts' + i);
+    topics.push(el ? (el.classList[1] || 'pending') : 'pending');
+  }
+  const prog = parseFloat(document.getElementById('progFill').style.width) || 0;
+  const encoded = btoa(JSON.stringify({ topics, prog }));
+  const url = location.origin + location.pathname + '#s=' + encoded;
+  document.getElementById('mmUrl').textContent = url;
+  document.getElementById('mmQrImg').src =
+    'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(url);
+  document.getElementById('mmStatus').textContent = '✓ 진행 상태 포함 — URL 클릭 후 복사';
+}
+
+function openWatchTab() {
+  window.open(location.origin + location.pathname + '?watch=1', '_blank');
+  closeMobileModal();
+}
+
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
+  // 감시 모드 (같은 기기 다른 탭에서 실시간 동기화)
+  if (new URLSearchParams(location.search).get('watch') === '1') {
+    document.body.classList.add('watch-mode');
+    const badge = document.getElementById('statusBadge');
+    badge.textContent = 'WATCH';
+    badge.className = 'top-badge running';
+  }
+
+  // ESC 키 / 모달 외부 클릭으로 닫기
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeMobileModal(); });
+  document.getElementById('mobileModal').addEventListener('click', e => {
+    if (e.target === document.getElementById('mobileModal')) closeMobileModal();
+  });
+
   initOffice();
   restoreSession();
   // idle 애니메이션
