@@ -1,0 +1,80 @@
+name: 봇 스케줄 디스패처
+
+# 사용법:
+#   외부 크론 서비스(cron-job.org 등)에서 아래 URL을 POST 호출
+#   POST https://api.github.com/repos/4dmixxai-teams/4dmixx-office/actions/workflows/dispatcher.yml/dispatches
+#   Header: Authorization: Bearer {GITHUB_PAT}  (workflow scope 필요)
+#   Body:   {"ref":"main"}
+#
+# 권장 호출 시각 (KST):
+#   평일 10:05, 13:05, 17:05 — flow-mixbot / flow-3dprint-bot
+#   매일  */15분              — recode-note (별도 크론 등록 권장)
+#
+# 필요 Secret: DISPATCH_PAT (Settings → Secrets → Actions)
+#   github.com/settings/tokens 에서 'workflow' 스코프 PAT 발급 후 등록
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: '트리거 대상'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - mixbot
+          - 3dprint
+          - recode
+  schedule:
+    # 백업용 (GitHub 스케줄 지연 있음 — 외부 크론이 주 트리거)
+    - cron: '5 1 * * 1-5'   # 평일 10:05 KST
+    - cron: '5 4 * * 1-5'   # 평일 13:05 KST
+    - cron: '5 8 * * 1-5'   # 평일 17:05 KST
+
+jobs:
+  dispatch-bots:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 현재 KST 시각
+        run: TZ=Asia/Seoul date
+
+      - name: flow-mixbot 트리거
+        if: ${{ github.event_name == 'schedule' || inputs.target == 'all' || inputs.target == 'mixbot' }}
+        env:
+          DISPATCH_PAT: ${{ secrets.DISPATCH_PAT }}
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $DISPATCH_PAT" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/4dmixxai-teams/flow-mixbot/actions/workflows/sync_and_notify.yml/dispatches \
+            -d '{"ref":"main","inputs":{"force_run":"false"}}')
+          echo "flow-mixbot → HTTP $STATUS"
+          [ "$STATUS" = "204" ] && echo "✅ 트리거 성공" || echo "❌ 트리거 실패 (DISPATCH_PAT 확인 필요)"
+
+      - name: flow-3dprint-bot 트리거
+        if: ${{ github.event_name == 'schedule' || inputs.target == 'all' || inputs.target == '3dprint' }}
+        env:
+          DISPATCH_PAT: ${{ secrets.DISPATCH_PAT }}
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $DISPATCH_PAT" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/4dmixxai-teams/flow-3dprint-bot/actions/workflows/report.yml/dispatches \
+            -d '{"ref":"main"}')
+          echo "flow-3dprint-bot → HTTP $STATUS"
+          [ "$STATUS" = "204" ] && echo "✅ 트리거 성공" || echo "❌ 트리거 실패 (DISPATCH_PAT 확인 필요)"
+
+      - name: recode-note 트리거
+        if: ${{ inputs.target == 'all' || inputs.target == 'recode' }}
+        env:
+          DISPATCH_PAT: ${{ secrets.DISPATCH_PAT }}
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $DISPATCH_PAT" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/4dmixxai-teams/recode-note/actions/workflows/transcribe.yml/dispatches \
+            -d '{"ref":"main"}')
+          echo "recode-note → HTTP $STATUS"
+          [ "$STATUS" = "204" ] && echo "✅ 트리거 성공" || echo "❌ 트리거 실패 (DISPATCH_PAT 확인 필요)"
