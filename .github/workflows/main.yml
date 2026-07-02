@@ -11,7 +11,7 @@ on:
     - cron: '5 1 * * 1-5'   # 평일 10:05 KST — 봇 디스패치
     - cron: '5 4 * * 1-5'   # 평일 13:05 KST — 봇 디스패치
     - cron: '5 8 * * 1-5'   # 평일 17:05 KST — 봇 디스패치
-    - cron: '0 0 * * *'     # 매일 09:00 KST — AI 전략 회의
+    - cron: '0 */4 * * *'   # 매 4시간마다 — AI 전략 회의 (24시간 상시, 6회/일)
 
   workflow_dispatch:
     inputs:
@@ -86,11 +86,12 @@ jobs:
   # ── AI 전략 회의 (매일 09:00 KST or 수동) ───────────────────────────────────
   daily-meeting:
     if: >
-      github.event.schedule == '0 0 * * *' ||
+      github.event.schedule == '0 */4 * * *' ||
       (github.event_name == 'workflow_dispatch' && inputs.target == 'meeting')
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    concurrency:
+      group: daily-meeting
+      cancel-in-progress: false
 
     steps:
       - uses: actions/checkout@v4
@@ -99,19 +100,12 @@ jobs:
         with:
           node-version: '20'
 
-      - run: npm install node-fetch@3
-
-      - name: AI 전략 회의 실행
+      - name: AI 전략 회의 실행 및 Flow 보고
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FLOW_MCP_TOKEN:    ${{ secrets.FLOW_MCP_TOKEN }}
+          FLOW_PROJECT_ID:   ${{ secrets.FLOW_PROJECT_ID }}
         run: node scripts/run-meeting.js
-
-      - name: 결과 커밋 & 푸시
-        run: |
-          git config user.name "4DMIXX AI Bot"
-          git config user.email "bot@4dmixx.com"
-          git add results/ 2>/dev/null || true
-          git diff --staged --quiet || (git commit -m "🤖 AI 전략 회의 $(date '+%Y-%m-%d')" && git push)
 
   # ── Flow 웹훅 → 회의봇 (repository_dispatch: flow-new-post or 수동 테스트) ──
   flow-meeting-bot:
