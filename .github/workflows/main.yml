@@ -87,7 +87,7 @@ jobs:
   daily-meeting:
     if: >
       github.event.schedule == '0 0 * * *' ||
-      (github.event_name == 'workflow_dispatch' && (inputs.target == 'all' || inputs.target == 'meeting'))
+      (github.event_name == 'workflow_dispatch' && inputs.target == 'meeting')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -110,9 +110,8 @@ jobs:
         run: |
           git config user.name "4DMIXX AI Bot"
           git config user.email "bot@4dmixx.com"
-          git add results/
-          git diff --staged --quiet || git commit -m "🤖 AI 전략 회의 $(date '+%Y-%m-%d')"
-          git push
+          git add results/ 2>/dev/null || true
+          git diff --staged --quiet || (git commit -m "🤖 AI 전략 회의 $(date '+%Y-%m-%d')" && git push)
 
   # ── Flow 웹훅 → 회의봇 (repository_dispatch: flow-new-post or 수동 테스트) ──
   flow-meeting-bot:
