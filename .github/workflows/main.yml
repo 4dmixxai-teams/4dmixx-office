@@ -1,16 +1,22 @@
 name: 4DMIXX 자동화 통합
 
-# ─── 스케줄 트리거 (cron-job.org 또는 GitHub 백업) ───────────────────────────
-# 평일 10:05 / 13:05 / 17:05 KST → 봇 디스패치
-# 매일 09:00 KST                  → AI 전략 회의
+# 스케줄 (모두 UTC 기준, KST = UTC+9)
 #
-# 필요 Secret: DISPATCH_PAT (workflow scope PAT)
+# dispatch-bots : 평일 10:05 / 13:05 / 17:05 KST
+# poll-meetings : 평일 09:00 / 12:00 / 15:00 / 18:00 KST  +  토요일 09:00 KST
+#
+# 필요 Secret: DISPATCH_PAT, ANTHROPIC_API_KEY, FLOW_MCP_TOKEN, FLOW_PROJECT_ID
 
 on:
   schedule:
     - cron: '5 1 * * 1-5'   # 평일 10:05 KST — 봇 디스패치
     - cron: '5 4 * * 1-5'   # 평일 13:05 KST — 봇 디스패치
     - cron: '5 8 * * 1-5'   # 평일 17:05 KST — 봇 디스패치
+    - cron: '0 0 * * 1-5'   # 평일 09:00 KST — Flow 폴링
+    - cron: '0 3 * * 1-5'   # 평일 12:00 KST — Flow 폴링
+    - cron: '0 6 * * 1-5'   # 평일 15:00 KST — Flow 폴링
+    - cron: '0 9 * * 1-5'   # 평일 18:00 KST — Flow 폴링
+    - cron: '0 0 * * 6'     # 토요일 09:00 KST — Flow 폴링 (금요일 미처리 글)
 
   workflow_dispatch:
     inputs:
@@ -19,7 +25,7 @@ on:
         required: false
         default: 'all'
         type: choice
-        options: [all, mixbot, 3dprint, recode, meeting]
+        options: [all, mixbot, 3dprint, recode, meeting, poll]
       post_payload:
         description: '게시글 JSON (웹훅 테스트용)'
         required: false
@@ -36,13 +42,13 @@ on:
 
 
 jobs:
-  # ── 봇 디스패치 (평일 스케줄 or 수동) ───────────────────────────────────────
+  # ── 봇 디스패치 (평일 스케줄 or 명시적 수동) ─────────────────────────────────
   dispatch-bots:
     if: >
       github.event.schedule == '5 1 * * 1-5' ||
       github.event.schedule == '5 4 * * 1-5' ||
       github.event.schedule == '5 8 * * 1-5' ||
-      (github.event_name == 'workflow_dispatch' && inputs.target != 'meeting' && inputs.post_payload == '')
+      (github.event_name == 'workflow_dispatch' && (inputs.target == 'mixbot' || inputs.target == '3dprint' || inputs.target == 'recode') && inputs.post_payload == '')
     runs-on: ubuntu-latest
 
     steps:
@@ -75,20 +81,41 @@ jobs:
           echo "flow-3dprint-bot → HTTP $STATUS"
           [ "$STATUS" = "204" ] && echo "✅ 성공" || echo "❌ 실패"
 
-      - name: recode-note 트리거
-        if: ${{ inputs.target == 'all' || inputs.target == 'recode' }}
-        env:
-          DISPATCH_PAT: ${{ secrets.DISPATCH_PAT }}
-        run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-            -H "Authorization: Bearer $DISPATCH_PAT" \
-            -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/4dmixxai-teams/recode-note/actions/workflows/transcribe.yml/dispatches \
-            -d '{"ref":"main"}')
-          echo "recode-note → HTTP $STATUS"
-          [ "$STATUS" = "204" ] && echo "✅ 성공" || echo "❌ 실패"
+  # ── Flow 포스트 폴링 → 회의 자동 실행 ────────────────────────────────────────
+  poll-meetings:
+    if: >
+      github.event.schedule == '0 0 * * 1-5' ||
+      github.event.schedule == '0 3 * * 1-5' ||
+      github.event.schedule == '0 6 * * 1-5' ||
+      github.event.schedule == '0 9 * * 1-5' ||
+      github.event.schedule == '0 0 * * 6'   ||
+      (github.event_name == 'workflow_dispatch' && inputs.target == 'poll')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
-  # ── AI 전략 회의 (매일 09:00 KST or 수동) ───────────────────────────────────
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - run: npm install node-fetch@3
+
+      - name: Flow 포스트 폴링 실행
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FLOW_MCP_TOKEN:    ${{ secrets.FLOW_MCP_TOKEN }}
+          FLOW_PROJECT_ID:   ${{ secrets.FLOW_PROJECT_ID }}
+        run: node scripts/poll-meetings.mjs
+
+      - name: 처리 이력 커밋
+        run: |
+          git config user.name "4DMIXX AI Bot"
+          git config user.email "bot@4dmixx.com"
+          git add scripts/.processed_posts.json 2>/dev/null || true
+          git diff --staged --quiet || (git commit -m "🤖 폴링이력 $(date '+%Y-%m-%d %H:%M')" && git push) || true
 
   # ── Flow 웹훅 → 회의봇 (repository_dispatch: flow-new-post or 수동 테스트) ──
   flow-meeting-bot:
@@ -141,7 +168,7 @@ jobs:
           git config user.name "4DMIXX AI Bot"
           git config user.email "bot@4dmixx.com"
           git add scripts/.processed_posts.json 2>/dev/null || true
-          git diff --staged --quiet || git commit -m "🤖 처리이력 $(date '+%Y-%m-%d %H:%M')" && git push || true
+          git diff --staged --quiet || (git commit -m "🤖 처리이력 $(date '+%Y-%m-%d %H:%M')" && git push) || true
 
   # ── PDF 생성 (repository_dispatch: meeting-complete) ────────────────────────
   generate-pdf:
