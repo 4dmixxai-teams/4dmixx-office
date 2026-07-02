@@ -11,7 +11,6 @@ on:
     - cron: '5 1 * * 1-5'   # 평일 10:05 KST — 봇 디스패치
     - cron: '5 4 * * 1-5'   # 평일 13:05 KST — 봇 디스패치
     - cron: '5 8 * * 1-5'   # 평일 17:05 KST — 봇 디스패치
-    - cron: '0 */4 * * *'   # 매 4시간마다 — AI 전략 회의 (24시간 상시, 6회/일)
 
   workflow_dispatch:
     inputs:
@@ -84,28 +83,6 @@ jobs:
           [ "$STATUS" = "204" ] && echo "✅ 성공" || echo "❌ 실패"
 
   # ── AI 전략 회의 (매일 09:00 KST or 수동) ───────────────────────────────────
-  daily-meeting:
-    if: >
-      github.event.schedule == '0 */4 * * *' ||
-      (github.event_name == 'workflow_dispatch' && inputs.target == 'meeting')
-    runs-on: ubuntu-latest
-    concurrency:
-      group: daily-meeting
-      cancel-in-progress: false
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: AI 전략 회의 실행 및 Flow 보고
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          FLOW_MCP_TOKEN:    ${{ secrets.FLOW_MCP_TOKEN }}
-          FLOW_PROJECT_ID:   ${{ secrets.FLOW_PROJECT_ID }}
-        run: node scripts/run-meeting.js
 
   # ── Flow 웹훅 → 회의봇 (repository_dispatch: flow-new-post or 수동 테스트) ──
   flow-meeting-bot:
