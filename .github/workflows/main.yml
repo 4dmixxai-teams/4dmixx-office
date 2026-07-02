@@ -24,6 +24,12 @@ on:
         description: '게시글 JSON (웹훅 테스트용)'
         required: false
         default: ''
+      meeting_mode:
+        description: '회의 모드'
+        required: false
+        default: 'quick'
+        type: choice
+        options: [quick, deep]
 
   repository_dispatch:
     types: [flow-new-post, meeting-complete]
@@ -113,7 +119,10 @@ jobs:
           FLOW_MCP_TOKEN:    ${{ secrets.FLOW_MCP_TOKEN }}
           FLOW_PROJECT_ID:   ${{ secrets.FLOW_PROJECT_ID }}
           WEBHOOK_PAYLOAD:   ${{ toJson(github.event.client_payload) }}
-        run: node flow-meeting.mjs
+          MEETING_MODE:      ${{ github.event.client_payload.meeting_mode || 'quick' }}
+          FLOW_POST_CONTENT: ${{ github.event.client_payload.content }}
+          FLOW_POST_TITLE:   ${{ github.event.client_payload.title }}
+        run: node scripts/flow-meeting.mjs
 
       - name: Flow 봇 실행 (수동 테스트)
         if: github.event_name == 'workflow_dispatch'
@@ -122,7 +131,10 @@ jobs:
           FLOW_MCP_TOKEN:    ${{ secrets.FLOW_MCP_TOKEN }}
           FLOW_PROJECT_ID:   ${{ secrets.FLOW_PROJECT_ID }}
           WEBHOOK_PAYLOAD:   ${{ inputs.post_payload }}
-        run: node flow-meeting.mjs
+          MEETING_MODE:      ${{ inputs.meeting_mode }}
+          FLOW_POST_CONTENT: ${{ fromJson(inputs.post_payload).content }}
+          FLOW_POST_TITLE:   ${{ fromJson(inputs.post_payload).title }}
+        run: node scripts/flow-meeting.mjs
 
       - name: 처리 이력 커밋
         run: |
